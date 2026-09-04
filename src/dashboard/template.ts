@@ -2094,13 +2094,14 @@ export function getDashboardHtml(): string {
         ctx.font = isSelected ? '600 12px Inter' : (isConnected ? '500 11.5px Inter' : '400 11px Inter');
         ctx.textAlign = 'center';
         
-        // Label pill backdrop for crisp readability
-        const tw = ctx.measureText(n.id).width;
+        // Label pill backdrop for crisp readability (truncated if long unless selected)
+        const displayLabel = (!isSelected && n.id.length > 26) ? (n.id.slice(0, 24) + '…') : n.id;
+        const tw = ctx.measureText(displayLabel).width;
         ctx.fillStyle = 'rgba(8, 9, 12, 0.8)';
         ctx.fillRect(n.x - tw/2 - 4, n.y + n.r + 5, tw + 8, 14);
 
         ctx.fillStyle = isSelected ? '#ffffff' : (isConnected ? '#f8fafc' : '#cbd5e1');
-        ctx.fillText(n.id, n.x, n.y + n.r + 16);
+        ctx.fillText(displayLabel, n.x, n.y + n.r + 16);
       }
 
       ctx.restore();
