@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+bun.lock
+
+# Build & Dist
+dist/
+out/
+
+# Database files & Backups (Strict Rule: NEVER commit DB files)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+mnemosyne.db*
+backups/
+
+# Secrets, Environment & Logs
+.env
+.env.*
+*.env
+*.log
+*.pem
+*.key
+*.cert
+*.p12
+*.crt
+id_rsa*
+
+# Internal Specs & Roadmaps
+PRD.md
+MILESTONES.md
+*.spec.md
+*.plan.md
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

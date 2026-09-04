@@ -1,0 +1,78 @@
+#!/usr/bin/env bun
+import { getDatabase } from "../src/db/connection.ts";
+import { MnemosyneEngine } from "../src/engine/index.ts";
+
+async function main() {
+  const args = process.argv.slice(2);
+  const prompt = args.join(" ").trim();
+
+  if (!prompt || prompt === "-h" || prompt === "--help") {
+    console.log(`
+🦙 Mnemosyne-Hermes CLI Wrapper
+Instant Memory Injection & Guardrail Context for Hermes Agent
+
+USAGE:
+  mnemo-hermes "<your prompt or task>"
+
+DESCRIPTION:
+  1. Searches Mnemosyne long-term memory for relevant rules, past failure playbooks, and negative guardrails.
+  2. Synthesizes a compact, high-priority system context string.
+  3. Spawns 'hermes' agent CLI with context pre-injected into chat prompt.
+
+EXAMPLES:
+  mnemo-hermes "build project and deploy to cloudflare"
+  mnemo-hermes "fix the 401 agentrouter issue"
+`);
+    process.exit(0);
+  }
+
+  const db = getDatabase();
+  const engine = new MnemosyneEngine(db);
+
+  // 1. Retrieve standing card (Layer 1 Fast Path) & relevant contextual recall (Layer 2)
+  const card = engine.getCard({ peer: "hermes", limit: 10 });
+  const recallRes = await engine.recall({
+    query: prompt,
+    peer: "hermes",
+    limit: 5,
+    max_tokens: 350,
+    resolution: "meso",
+    prefer_bm25: true,
+  });
+
+  const combinedBlocks = [];
+  if (card.facts.length > 0) {
+    combinedBlocks.push(card.formatted);
+  }
+  if (recallRes.formatted) {
+    combinedBlocks.push(recallRes.formatted);
+  }
+
+  const injectedContext = combinedBlocks.join("\n\n").trim();
+
+  // 2. Check if hermes command is present
+  const checkProc = Bun.spawnSync(["which", "hermes"]);
+  const hasHermes = checkProc.exitCode === 0;
+
+  if (hasHermes) {
+    console.log(`\n\x1b[35m🏛️ Mnemosyne context injected (${card.facts.length} standing facts, ${recallRes.memories.length} memories). Spawning Hermes...\x1b[0m\n`);
+    const fullQuery = `${injectedContext}\n\n[TASK / PROMPT]:\n${prompt}`;
+    const proc = Bun.spawn({
+      cmd: ["hermes", "chat", "-q", fullQuery],
+      stdio: ["inherit", "inherit", "inherit"],
+    });
+    await proc.exited;
+  } else {
+    console.log("\n\x1b[33mℹ 'hermes' CLI executable is not installed in your PATH.\x1b[0m");
+    console.log("\x1b[1mBelow is the synthesized context ready to pipe into your LLM or agent:\x1b[0m\n");
+    console.log("─".repeat(60));
+    console.log(injectedContext);
+    console.log("─".repeat(60));
+    console.log("\n\x1b[36mTip:\x1b[0m Once Hermes is installed, run: \x1b[1mmnemo-hermes \"${prompt}\"\x1b[0m\n");
+  }
+}
+
+main().catch((err) => {
+  console.error("Error running mnemo-hermes:", err);
+  process.exit(1);
+});

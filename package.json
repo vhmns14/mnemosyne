@@ -1,0 +1,32 @@
+{
+  "name": "mnemosyne-memory",
+  "version": "1.0.0",
+  "description": "Ultra-lightweight, local-first Long-Term Holographic & Dialectic Memory Engine for AI Agents",
+  "type": "module",
+  "bin": {
+    "mnemo": "./bin/mnemo.ts",
+    "mnemo-hermes": "./bin/mnemo-hermes"
+  },
+  "scripts": {
+    "cli": "bun run src/cli.ts",
+    "mcp": "bun run src/mcp.ts",
+    "server": "bun run src/server.ts",
+    "test": "bun test"
+  },
+  "keywords": [
+    "ai",
+    "memory",
+    "hermes",
+    "mcp",
+    "honcho",
+    "holographic-memory",
+    "local-first",
+    "sqlite",
+    "bun"
+  ],
+  "author": "vahmi",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
