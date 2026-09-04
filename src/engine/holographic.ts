@@ -47,7 +47,7 @@ export function applyAssociativeResonance(
       if (memoryMap.has(targetId)) {
         const existing = memoryMap.get(targetId)!;
         existing.resonance_boost = Math.max(existing.resonance_boost, boost);
-        existing.score += boost;
+        existing.score = Math.min(1.0, Math.max(0.0, existing.score + boost));
       } else {
         let tags: string[] = [];
         try {
@@ -75,7 +75,7 @@ export function applyAssociativeResonance(
           outcome: link.outcome || "neutral",
           failure_reason: link.failure_reason,
           is_negative_constraint: Boolean(link.is_negative_constraint),
-          score: boost,
+          score: Math.min(1.0, Math.max(0.0, boost)),
           vector_score: 0,
           bm25_score: 0,
           recency_score: 0,
@@ -133,6 +133,9 @@ export function applyAssociativeResonance(
 
   // Re-sort descending by final score
   const finalResults = Array.from(memoryMap.values());
+  for (const mem of finalResults) {
+    mem.score = Math.min(1.0, Math.max(0.0, mem.score));
+  }
   finalResults.sort((a, b) => b.score - a.score);
   return finalResults.slice(0, limit);
 }

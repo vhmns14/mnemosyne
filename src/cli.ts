@@ -515,7 +515,7 @@ Evaluate shell command against system guardrails (16GB RAM limit, no background,
         if (!receipt) {
           console.log(`\x1b[33m⚠ No memory found matching: "${contentOrQuery}".\x1b[0m`);
         } else {
-          console.log("\n\x1b[1m🔒 Cryptographic Deletion Receipt (EU AI Act & Right to be Forgotten)\x1b[0m");
+          console.log("\n\x1b[1m🔒 Cryptographic Deletion Receipt (SHA-256 Audit Proof)\x1b[0m");
           console.log("─".repeat(60));
           console.log(`  Memory ID: \x1b[36m${receipt.memory_id}\x1b[0m`);
           console.log(`  SHA-256 Proof: \x1b[33m${receipt.sha256_hash}\x1b[0m`);

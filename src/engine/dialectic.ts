@@ -40,6 +40,23 @@ export function isTransactionalNoise(text: string, category?: string): boolean {
   return false;
 }
 
+export const OPPOSITES: Record<string, string> = {
+  LIKES: "DISLIKES",
+  DISLIKES: "LIKES",
+  SUKA: "BENCI",
+  BENCI: "SUKA",
+  LOVES: "HATES",
+  HATES: "LOVES",
+  WANTS: "REJECTS",
+  REJECTS: "WANTS",
+  ENABLES: "DISABLES",
+  DISABLES: "ENABLES",
+  ALLOWS: "FORBIDS",
+  FORBIDS: "ALLOWS",
+  TRUE: "FALSE",
+  FALSE: "TRUE",
+};
+
 /**
  * Tuned rule-based triple extractor: (Subject)-[Predicate]->(Object)
  * Highly optimized for Indonesian and English developer statements.
@@ -328,21 +345,67 @@ export async function rememberMemory(
   // 5. Ingest Triples & Automatic Conflict Resolution for Triples
   const extracted = options.entities || extractTriples(content);
   for (const t of extracted) {
-    // Check if an existing active triple has the same subject and predicate
+    const subject = t.subject.trim();
+    let predicate = t.predicate.trim().toUpperCase().replace(/\s+/g, "_");
+    const object = t.object.trim();
+
+    // A. Honcho Self-Healing Conflict Resolution (Antonym / Polarity Check)
+    const oppositePred = OPPOSITES[predicate];
+    if (oppositePred) {
+      const opposing = db
+        .query(
+          `SELECT t.id, t.memory_id, m.contradiction_count
+           FROM entity_triples t
+           JOIN memories m ON t.memory_id = m.id
+           WHERE LOWER(t.subject) = LOWER(?)
+             AND t.predicate = ?
+             AND LOWER(t.object) = LOWER(?)
+             AND t.is_active = 1`
+        )
+        .all(subject, oppositePred, object) as any[];
+
+      for (const opp of opposing) {
+        db.prepare(`UPDATE entity_triples SET is_active = 0, valid_until = ? WHERE id = ?`).run(now, opp.id);
+        if (opp.memory_id && opp.memory_id !== id) {
+          const newContradictionCount = (opp.contradiction_count || 0) + 1;
+          db.prepare(
+            `UPDATE memories SET is_active = 0, status = 'superseded', contradiction_count = ?, superseded_by_id = ?, updated_at = ? WHERE id = ?`
+          ).run(newContradictionCount, id, now, opp.memory_id);
+
+          recordMemoryEvent(
+            db,
+            opp.memory_id,
+            "SUPERSEDED",
+            `Conflict resolved by recency: '${content}' superseded opposing fact '${oppositePred}'`,
+            options.actor || peer
+          );
+        }
+      }
+    }
+
+    // B. Dedup by Subject + Predicate: check existing active triple
     const existing = db
       .query(
-        `SELECT id, memory_id FROM entity_triples
-         WHERE subject = ? AND predicate = ? AND is_active = 1`
+        `SELECT id, memory_id, object FROM entity_triples
+         WHERE LOWER(subject) = LOWER(?) AND predicate = ? AND is_active = 1`
       )
-      .all(t.subject, t.predicate) as any[];
+      .all(subject, predicate) as any[];
 
     for (const old of existing) {
       db.prepare(`UPDATE entity_triples SET is_active = 0, valid_until = ? WHERE id = ?`).run(now, old.id);
       // Also mark older parent memory superseded if not already
       if (old.memory_id && old.memory_id !== id) {
         db.prepare(
-          `UPDATE memories SET is_active = 0, superseded_by_id = ?, updated_at = ? WHERE id = ?`
+          `UPDATE memories SET is_active = 0, status = 'superseded', superseded_by_id = ?, updated_at = ? WHERE id = ?`
         ).run(id, now, old.memory_id);
+
+        recordMemoryEvent(
+          db,
+          old.memory_id,
+          "SUPERSEDED",
+          `Fact updated/superseded by memory ${id}`,
+          options.actor || peer
+        );
       }
     }
 
@@ -350,11 +413,11 @@ export async function rememberMemory(
     db.prepare(`
       INSERT INTO entity_triples (id, subject, predicate, object, memory_id, confidence, is_active, valid_from, valid_until, created_at)
       VALUES (?, ?, ?, ?, ?, 1.0, 1, ?, ?, ?)
-    `).run(tripleId, t.subject, t.predicate, t.object, id, validFrom, validUntil, now);
+    `).run(tripleId, subject, predicate, object, id, validFrom, validUntil, now);
 
     // Auto-canonicalize: register alias automatically
-    if (t.predicate === "ALIAS_OF" || t.predicate === "ALIAS") {
-      addEntityAlias(db, t.subject, t.object);
+    if (predicate === "ALIAS_OF" || predicate === "ALIAS") {
+      addEntityAlias(db, subject, object);
     }
   }
 
@@ -465,23 +528,6 @@ export function consolidateMemories(db: Database): ConsolidationReport {
     active_memories_remaining: activeRow?.count || 0,
   };
 }
-
-const OPPOSITES: Record<string, string> = {
-  LIKES: "DISLIKES",
-  DISLIKES: "LIKES",
-  SUKA: "BENCI",
-  BENCI: "SUKA",
-  LOVES: "HATES",
-  HATES: "LOVES",
-  WANTS: "REJECTS",
-  REJECTS: "WANTS",
-  ENABLES: "DISABLES",
-  DISABLES: "ENABLES",
-  ALLOWS: "FORBIDS",
-  FORBIDS: "ALLOWS",
-  TRUE: "FALSE",
-  FALSE: "TRUE",
-};
 
 /**
  * Upsert Fact with Entity + Predicate Dedup & Honcho Self-Healing Conflict Resolution

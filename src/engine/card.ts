@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { StandingCard } from "../types.ts";
+import { sweepExpiredFacts } from "./dialectic.ts";
 
 /**
  * Layering: Standing Card (Fast Path) vs Detail Notes (Slow Path)
@@ -10,6 +11,9 @@ export function getStandingCard(
   db: Database,
   options: { scope?: string; limit?: number; peer?: string } = {}
 ): StandingCard {
+  // Sweep expired facts in real-time so standing card never includes expired facts
+  sweepExpiredFacts(db);
+
   const limit = options.limit || 15;
   const scope = options.scope || "global";
 

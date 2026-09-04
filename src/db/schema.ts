@@ -246,7 +246,7 @@ export function initSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_events_type ON memory_events(event_type);
   `);
 
-  // 11. Audit Log & Cryptographic Deletion Receipts (EU AI Act Article 13 compliance)
+  // 11. Audit Log & Cryptographic Deletion Receipts (SHA-256 tamper-proof audit proof)
   db.exec(`
     CREATE TABLE IF NOT EXISTS audit_log (
       id TEXT PRIMARY KEY,

@@ -19,7 +19,7 @@ describe("Mnemosyne Cognitive Expansion: 6 Core Next-Gen Capabilities", () => {
   describe("1. Pre-Flight Agent Firewall & Shell Interceptor", () => {
     test("blocks local builds in undangan-digital (16GB RAM safeguard)", async () => {
       const verdict = await engine.preflight("opennextjs-cloudflare build", {
-        contextPath: "/home/vahmi/vhmns/undangan-digital",
+        contextPath: "/projects/undangan-digital",
       });
       expect(verdict.allowed).toBe(false);
       expect(verdict.risk_level).toBe("blocked");

@@ -136,7 +136,7 @@ export function repairMemoryHealth(db: Database): DoctorReport {
 }
 
 /**
- * Cryptographic Purge & Proof of Deletion (EU AI Act Article 13 & GDPR Right to be Forgotten)
+ * Cryptographic Purge & Proof of Deletion (SHA-256 Cryptographic Receipt & Audit Log)
  * Permanently scrubs the target memory and produces an immutable SHA-256 cryptographic receipt.
  */
 export function cryptographicPurge(db: Database, idOrQuery: string): PurgeReceipt | null {

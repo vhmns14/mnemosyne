@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { CONFIG } from "../config.ts";
 import { cosineSimilarity, decodeVector, getEmbedding } from "./embedder.ts";
+import { sweepExpiredFacts } from "./dialectic.ts";
 import type { MemoryRecord, RecallOptions, ScoredMemory } from "../types.ts";
 
 import * as os from "node:os";
@@ -41,6 +42,11 @@ export async function searchHybrid(
   db: Database,
   options: RecallOptions
 ): Promise<ScoredMemory[]> {
+  // 0. Sweep any expired facts in real-time so is_active accurately reflects validity window
+  if (!options.include_expired) {
+    sweepExpiredFacts(db);
+  }
+
   const query = options.query.trim();
   if (!query) return [];
 
@@ -121,7 +127,7 @@ export async function searchHybrid(
     SELECT m.*, v.vector as vector_blob
     FROM memories m
     LEFT JOIN memory_vectors v ON m.id = v.memory_id
-    WHERE m.is_active = 1
+    WHERE ${options.include_expired ? "(m.is_active = 1 OR m.status = 'expired')" : "m.is_active = 1"}
   `;
   const params: any[] = [];
 
@@ -145,7 +151,17 @@ export async function searchHybrid(
 
   // 5. Calculate Scored Memories with Relevance Gating
   const scoredMemories: ScoredMemory[] = [];
-  const { VECTOR, BM25, RECENCY } = CONFIG.WEIGHTS;
+  const provider = (CONFIG.EMBEDDING_PROVIDER || "local").toLowerCase();
+  const isSemanticProvider = provider !== "local";
+
+  // Dynamic weighting:
+  // - Local provider (sparse feature hash): BM25 is primary lexical signal (0.60 vs 0.10)
+  // - Semantic provider (Ollama / OpenAI / Albatross): Dense semantic vector is primary (0.45 vs 0.25)
+  // - If vector is skipped or unavailable (queryVec === null): BM25 gets full signal weight (0.70)
+  // Base signal always sums to exactly 0.70 across all branches!
+  const vectorWeight = queryVec ? (isSemanticProvider ? 0.45 : 0.10) : 0.0;
+  const bm25Weight = queryVec ? (isSemanticProvider ? 0.25 : 0.60) : 0.70;
+  const { RECENCY } = CONFIG.WEIGHTS;
 
   for (const row of candidateRows) {
     // A. Vector Score
@@ -161,10 +177,7 @@ export async function searchHybrid(
     const bm25Score = ftsScores.get(row.id) || 0;
 
     // C. Semantic / Lexical Relevance Gating:
-    // If vector is skipped, BM25 acts as primary signal.
-    const effectiveVectorWeight = queryVec ? VECTOR : 0.0;
-    const effectiveBm25Weight = queryVec ? BM25 : 0.70;
-    const signal = vectorScore * effectiveVectorWeight + bm25Score * effectiveBm25Weight;
+    const signal = vectorScore * vectorWeight + bm25Score * bm25Weight;
 
     if (signal < 0.05 && !row.is_negative_constraint) {
       continue; // Skip irrelevant noise
@@ -193,6 +206,7 @@ export async function searchHybrid(
     }
 
     const rawScore = (signal + recencyScore * RECENCY) * multiplier * confidence * ttlWeight;
+    const cappedScore = Math.min(1.0, Math.max(0.0, rawScore));
 
     let tags: string[] = [];
     try {
@@ -227,7 +241,7 @@ export async function searchHybrid(
       confidence,
       fingerprint: row.fingerprint,
       status: row.status,
-      score: rawScore,
+      score: cappedScore,
       vector_score: vectorScore,
       bm25_score: bm25Score,
       recency_score: recencyScore,
@@ -237,20 +251,5 @@ export async function searchHybrid(
 
   // 6. Sort and apply minRelevance filter
   scoredMemories.sort((a, b) => b.score - a.score);
-  const results = scoredMemories.filter((m) => m.score >= minRelevance).slice(0, limit);
-
-  // 7. Update access count asynchronously
-  if (results.length > 0) {
-    const updateStmt = db.prepare(`
-      UPDATE memories
-      SET access_count = access_count + 1, last_accessed_at = ?
-      WHERE id = ?
-    `);
-    const now = Date.now();
-    for (const res of results) {
-      updateStmt.run(now, res.id);
-    }
-  }
-
-  return results;
+  return scoredMemories.filter((m) => m.score >= minRelevance).slice(0, limit);
 }

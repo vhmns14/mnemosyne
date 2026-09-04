@@ -207,7 +207,7 @@ export function computeHippoPageRank(
     if (seedMap.has(row.id)) {
       const mem = seedMap.get(row.id)!;
       mem.pagerank_score = prScore;
-      mem.score += prScore * 0.25; // Boost score via PageRank graph centrality
+      mem.score = Math.min(1.0, Math.max(0.0, mem.score + prScore * 0.25)); // Boost score via PageRank graph centrality
     } else if (prScore > 0.08) {
       // High PageRank node pulled from graph!
       let tags: string[] = [];
@@ -236,7 +236,7 @@ export function computeHippoPageRank(
         outcome: row.outcome || "neutral",
         failure_reason: row.failure_reason,
         is_negative_constraint: Boolean(row.is_negative_constraint),
-        score: prScore * 0.4,
+        score: Math.min(1.0, Math.max(0.0, prScore * 0.4)),
         vector_score: 0,
         bm25_score: 0,
         recency_score: 0,
@@ -247,6 +247,9 @@ export function computeHippoPageRank(
   }
 
   const results = Array.from(seedMap.values());
+  for (const mem of results) {
+    mem.score = Math.min(1.0, Math.max(0.0, mem.score));
+  }
   results.sort((a, b) => b.score - a.score);
   return results.slice(0, limit);
 }

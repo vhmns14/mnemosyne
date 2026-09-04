@@ -6,7 +6,7 @@ import { rememberMemory, getOrCreatePersona, addEntityAlias, getEntityAliases, c
 import { getStandingCard } from "./card.ts";
 import { addRemediation, findRemediation, seedWorkspaceRemediations } from "./remediation.ts";
 import { synthesizeReflection, getReflections } from "./reflection.ts";
-import { auditMemoryHealth, repairMemoryHealth, cryptographicPurge, getMemoryTimeline } from "./doctor.ts";
+import { auditMemoryHealth, repairMemoryHealth, cryptographicPurge, getMemoryTimeline, recordMemoryEvent } from "./doctor.ts";
 import { formatMemories } from "./formatter.ts";
 import { compactContextWithBudget } from "./compactor.ts";
 import { detectSemanticDrift } from "./drift.ts";
@@ -74,14 +74,30 @@ export class MnemosyneEngine {
       memories = computeHippoPageRank(this.db, memories, options.limit || 5);
     }
 
-    // 4. Record co-occurrence between activated memories
+    // 4. Recency Feedback Loop & Score Clamping (Ebbinghaus Spacing)
+    const now = Date.now();
+    if (memories.length > 0) {
+      const updateStmt = this.db.prepare(`
+        UPDATE memories
+        SET access_count = access_count + 1, last_accessed_at = ?
+        WHERE id = ?
+      `);
+      for (const m of memories) {
+        updateStmt.run(now, m.id);
+        m.access_count = (m.access_count || 0) + 1;
+        m.last_accessed_at = now;
+        m.score = Math.min(1.0, Math.max(0.0, m.score));
+      }
+    }
+
+    // 5. Record co-occurrence between activated memories
     const recalledIds = memories.map((m) => m.id);
     recordCoOccurrence(this.db, recalledIds);
 
-    // 5. Check if query matches known error symptoms for automated remediation playbooks (Reflexion)
+    // 6. Check if query matches known error symptoms for automated remediation playbooks (Reflexion)
     let matchingRemediations = findRemediation(this.db, options.query);
 
-    // 6. Fetch User Persona if macro resolution is requested
+    // 7. Fetch User Persona if macro resolution is requested
     const persona = options.resolution === "macro"
       ? getOrCreatePersona(this.db, "user")
       : undefined;
@@ -89,7 +105,7 @@ export class MnemosyneEngine {
     let tokenBudget: TokenBudget | undefined;
     let formatted: string;
 
-    // 7. Context Compaction with Token Budget (Knapsack packing)
+    // 8. Context Compaction with Token Budget (Knapsack packing)
     if (options.max_tokens && options.max_tokens > 0) {
       const compacted = compactContextWithBudget(memories, options.max_tokens, persona);
       formatted = compacted.formatted;
@@ -139,6 +155,7 @@ export class MnemosyneEngine {
 
   /**
    * Forgets or marks a memory as inactive (soft delete).
+   * Safe matching: exact UUID > exact content > word-boundary matching (length >= 4).
    * Automatically deactivates linked entity triples to maintain graph integrity.
    */
   forget(idOrQuery: string): boolean {
@@ -150,29 +167,56 @@ export class MnemosyneEngine {
 
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed);
     const affectedIds: string[] = [];
+    const now = Date.now();
 
     if (isUuid) {
-      const res = this.db.prepare(`UPDATE memories SET is_active = 0 WHERE id = ?`).run(trimmed);
+      const res = this.db.prepare(
+        `UPDATE memories SET is_active = 0, updated_at = ? WHERE id = ? AND is_active = 1`
+      ).run(now, trimmed);
       if (res.changes > 0) affectedIds.push(trimmed);
     } else {
-      const matching = this.db
-        .query(`SELECT id FROM memories WHERE is_active = 1 AND content LIKE ?`)
-        .all(`%${trimmed}%`) as any[];
-      for (const m of matching) {
-        affectedIds.push(m.id);
+      // 1. Exact match priority (prevents wiping unrelated memories containing the word)
+      const exactMatches = this.db
+        .query(`SELECT id FROM memories WHERE is_active = 1 AND LOWER(TRIM(content)) = LOWER(?)`)
+        .all(trimmed) as any[];
+
+      if (exactMatches.length > 0) {
+        for (const m of exactMatches) affectedIds.push(m.id);
+      } else {
+        // 2. Strict word-boundary match (requires query length >= 4 to prevent accidental wide sweep)
+        if (trimmed.length < 4) {
+          return false;
+        }
+        const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const wordRegex = new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}([^\\p{L}\\p{N}]|$)`, "iu");
+
+        const candidates = this.db
+          .query(`SELECT id, content FROM memories WHERE is_active = 1 AND content LIKE ?`)
+          .all(`%${trimmed}%`) as any[];
+
+        for (const c of candidates) {
+          if (wordRegex.test(c.content)) {
+            affectedIds.push(c.id);
+          }
+        }
       }
+
       if (affectedIds.length > 0) {
+        const placeholders = affectedIds.map(() => "?").join(",");
         this.db
-          .prepare(`UPDATE memories SET is_active = 0 WHERE content LIKE ?`)
-          .run(`%${trimmed}%`);
+          .prepare(`UPDATE memories SET is_active = 0, updated_at = ? WHERE id IN (${placeholders})`)
+          .run(now, ...affectedIds);
       }
     }
 
     if (affectedIds.length > 0) {
       const placeholders = affectedIds.map(() => "?").join(",");
       this.db
-        .prepare(`UPDATE entity_triples SET is_active = 0 WHERE memory_id IN (${placeholders})`)
-        .run(...affectedIds);
+        .prepare(`UPDATE entity_triples SET is_active = 0, valid_until = ? WHERE memory_id IN (${placeholders})`)
+        .run(now, ...affectedIds);
+      for (const id of affectedIds) {
+        recordMemoryEvent(this.db, id, "MUTATED", "Memory forgotten (marked inactive)", "user");
+      }
       return true;
     }
 
@@ -180,7 +224,7 @@ export class MnemosyneEngine {
   }
 
   /**
-   * Cryptographic Purge (Hard Delete with verifiable SHA-256 evidence for EU AI Act / GDPR).
+   * Cryptographic Purge (Hard Delete with verifiable SHA-256 evidence receipt).
    */
   purge(idOrQuery: string): PurgeReceipt | null {
     const trimmed = idOrQuery?.trim();

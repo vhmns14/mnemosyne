@@ -98,7 +98,7 @@ const TOOLS = [
   },
   {
     name: "cryptographic_purge",
-    description: "EU AI Act Article 13 hard purge: permanently wipes memory and returns a tamper-proof SHA-256 audit receipt.",
+    description: "Cryptographic hard purge: permanently wipes memory and returns a tamper-proof SHA-256 audit receipt.",
     inputSchema: {
       type: "object",
       properties: {

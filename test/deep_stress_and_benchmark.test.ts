@@ -63,7 +63,7 @@ describe("Mnemosyne Deep Stress Test & 2026 MemoryAgentBench Protocol", () => {
     expect(recalledIds).not.toContain(memV1); // V1 must be suppressed
   });
 
-  test("MemoryAgentBench Competency 4 & EU AI Act: Cryptographic Hard Purge", async () => {
+  test("MemoryAgentBench Competency 4: Cryptographic Hard Purge with SHA-256 Receipt", async () => {
     const sensitiveId = await engine.remember({
       content: "Sensitive customer token: dummy-synthetic-token-9999",
       category: "fact",

@@ -36,7 +36,7 @@ SOTA memory architectures offer profound concepts, but their implementations are
 | **Generative Agents** | Higher-Order Thematic Reflection | `mnemo reflect` synthesizes multiple atomic facts into overarching conceptual insights. |
 | **Letta Context Doctor** | Context Doctor & Health Audit | `mnemo doctor [--repair]` inspects graph corruption and executes automated repairs. |
 | **Mem0 (Jan 2026)** | Immutable Event Ledger | `mnemo timeline <id>` tracks chronological mutation lineage (`CREATED`, `MUTATED`, `SUPERSEDED`). |
-| **EU AI Act Article 13** | Cryptographic Hard Purge Receipt | `mnemo purge <id>` scrubs all traces and logs tamper-proof SHA-256 deletion evidence. |
+| **Audit & Compliance** | Cryptographic Deletion Receipt | `mnemo purge <id>` scrubs all traces and logs tamper-proof SHA-256 deletion evidence. |
 | **Knapsack Compactor** | Context Token Budget Packing | `mnemo inject --tokens <N>` guarantees context never exceeds budget, packing P0/P1 rules first. |
 | **Semantic Drift Radar** | Belief Divergence Detector | `mnemo drift <stmt>` compares proposed decisions against baseline memory and warns before commit. |
 | **Leader Clustering** | Thematic Knowledge Topics | `mnemo topics` groups active memories into semantic topic clusters without ML dependencies. |
@@ -259,7 +259,13 @@ bun test
 ✓ security_and_regression.test.ts (15 tests: Anti-mass deletion, Regex sanitization, Double-count fix, CORS, Bounded HippoRAG, ByteOffset alignment, Dialectic scope inheritance, Pack triples persistence, Atomic purge, Escaped backup path)
 ✓ ecosystem_and_dashboard.test.ts (6 tests: Rules sync, Git/Error auto-capture, Digest, Pluggable vectors, Dashboard UI, REST endpoints)
 ✓ operations_and_integrations.test.ts (4 tests: Atomic online backup, MCP auto-config, Systemd service, Hermes injection)
+✓ cognitive_expansion.test.ts (10 tests: Shell interceptor, Trajectory calibration, Git anchor, Sleep/dreamer pass, Epistemic blackboard, L1 ring buffer)
+✓ autonomous_and_prime.test.ts (4 tests: Pre-commit hook, Systemd timer, Session primer, Semantic deduplication)
+✓ pragmatic_architecture.test.ts (7 tests: BM25 first, Dedup upsert, Standing card, Category decay, Declarative vs imperative, PII delete, Honcho conflict resolution)
+✓ hermes_architecture.test.ts (6 tests: 3-Layer storage, Hash fast-path, Retrieval budget, TTL sweeper, Capacity eviction, Dreaming watermark)
+✓ enhancements_and_hardening.test.ts (5 tests: Backup path, Noise filter, Alias auto-canonicalization, Offline dreamer fallback, Telemetry metrics)
+✓ production_critique_fixes.test.ts (5 tests: Dynamic weighting & score clamp, Polarity conflict invalidation, Real-time TTL, Safe word-boundary forget, Recency feedback loop)
 
-56 pass, 0 fail, 271 expect assertions (1.31s total)
+93 pass, 0 fail, 494 expect assertions (~1.9s total)
 ```
 
