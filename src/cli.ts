@@ -129,9 +129,15 @@ export async function runCli(args: string[]) {
       dir: { type: "string" },
       peer: { type: "string" },
       session: { type: "string" },
+      role: { type: "string" },
       fact: { type: "boolean", default: false },
       force: { type: "boolean", default: false },
       llm: { type: "boolean", default: false },
+      "use-llm": { type: "boolean", default: false },
+      "reset-watermark": { type: "boolean", default: false },
+      rewind: { type: "string" },
+      from: { type: "string" },
+      "dry-run": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
     allowPositionals: true,
@@ -165,6 +171,20 @@ REQUIREMENTS:
 
 EXAMPLE:
   mnemo import team-guidelines.json
+`,
+      ingest: `
+📥 mnemo ingest <content>
+Ingest raw conversation message or event into L3 Notes layer.
+
+USAGE:
+  mnemo ingest "<content>" [options]
+
+OPTIONS:
+  --peer <name>               Source peer/author (default: user)
+  --session <id>              Session identifier for conversation tracking
+  --role <role>               Role: user | assistant | system | tool (default: user)
+  --category <category>       Category tag (e.g. preference, rule, architecture)
+  --fact                      Explicitly promote to L2 Facts immediately
 `,
       remember: `
 🧠 mnemo remember <content> (alias: mnemo add)
@@ -205,9 +225,12 @@ USAGE:
 
 OPTIONS:
   --dry-run                   Preview reflection without writing changes
+  --llm, --use-llm            Enable LLM synthesis pass (via 9router / Ollama / OpenAI)
+  --force                     Force dreamer pass even if free RAM is low or notes already dreamed
+  --reset-watermark           Reset delta note watermark to 0 (reprocess all notes)
+  --rewind <n>                Rewind note watermark by N notes
   --session <id>              Process delta notes for a specific session only
   --until <days>              Decay threshold in days for hippocampal pruning (default: 14)
-  --llm                       Enable LLM synthesis pass (via 9router / Ollama / OpenAI)
 `,
       card: `
 📇 mnemo card [peer]
@@ -898,20 +921,33 @@ Evaluate shell command against system guardrails (16GB RAM limit, no background,
       }
 
       case "dream": {
-        const isDryRun = positionals.includes("--dry-run");
-
-        // 1. Hermes Delta Reflection over ingested chat notes
-        const hermesReport = await engine.dreamHermes({ dry_run: isDryRun, use_llm: Boolean(values.llm) });
-
-        // 2. Hippocampal Sleep Pass (decay pruning, clustering, orphaned edge cleanup)
+        const isDryRun = Boolean(values["dry-run"] || positionals.includes("--dry-run"));
+        const useLlm = Boolean(values.llm || values["use-llm"]);
+        const isForce = Boolean(values.force);
+        const resetWatermark = Boolean(values["reset-watermark"]);
+        const rewindCount = values.rewind ? parseInt(values.rewind, 10) : undefined;
         const decayDays = values.until ? parseInt(values.until, 10) : 14;
-        const report = await engine.dream({ dry_run: isDryRun, decay_days: decayDays });
+
+        const report = await engine.dream({
+          dry_run: isDryRun,
+          use_llm: useLlm,
+          force: isForce,
+          reset_watermark: resetWatermark,
+          rewind: rewindCount,
+          decay_days: decayDays,
+          session_id: values.session,
+        });
+
+        if (report.skipped) {
+          console.log(`\n\x1b[33m⚠️  Dreamer pass skipped: ${report.skip_reason}\x1b[0m`);
+        }
 
         console.log(`\n🌙 Mnemosyne Autonomous Dreamer Pass Complete:`);
-        console.log(`  • Delta Notes Processed:   \x1b[36m${hermesReport.input_delta_count}\x1b[0m`);
-        console.log(`  • New Facts Extracted:     \x1b[32m${hermesReport.facts_added}\x1b[0m`);
-        console.log(`  • Facts Superseded:        \x1b[33m${hermesReport.facts_superseded}\x1b[0m`);
-        console.log(`  • Patterns Recognized:     \x1b[35m${hermesReport.patterns_found}\x1b[0m`);
+        console.log(`  • Delta Notes Processed:   \x1b[36m${report.input_delta_count}\x1b[0m`);
+        console.log(`  • New Facts Added:         \x1b[32m${report.facts_added}\x1b[0m`);
+        console.log(`  • Facts Reinforced:        \x1b[36m${report.facts_reinforced}\x1b[0m`);
+        console.log(`  • Facts Superseded:        \x1b[33m${report.facts_superseded}\x1b[0m`);
+        console.log(`  • Patterns Recognized:     \x1b[35m${report.patterns_found}\x1b[0m`);
         console.log(`  • Synthesized Reflections: \x1b[36m${report.synthesized_reflections}\x1b[0m`);
         console.log(`  • Pruned Stale Memories:   \x1b[33m${report.pruned_stale_memories}\x1b[0m`);
         console.log(`  • Compacted Graph Edges:   \x1b[35m${report.compacted_graph_edges}\x1b[0m\n`);
@@ -1062,6 +1098,7 @@ Evaluate shell command against system guardrails (16GB RAM limit, no background,
           content: contentOrQuery,
           peer: values.peer || "user",
           session_id: values.session || undefined,
+          role: values.role || "user",
           category: values.category as any,
           is_fact: Boolean(values.fact),
         });

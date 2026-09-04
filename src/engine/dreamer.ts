@@ -212,29 +212,51 @@ Respond ONLY with valid JSON conforming to this schema (no markdown, no backtick
  */
 export async function runHermesDreamerPass(
   db: Database,
-  options: { session_id?: string; batch_size?: number; force?: boolean; dry_run?: boolean; use_llm?: boolean } = {}
+  options: {
+    session_id?: string;
+    batch_size?: number;
+    force?: boolean;
+    dry_run?: boolean;
+    use_llm?: boolean;
+    reset_watermark?: boolean;
+    from_id?: number;
+    rewind?: number;
+  } = {}
 ): Promise<HermesDreamReport> {
   const freeRamMb = os.freemem() / (1024 * 1024);
   const now = Date.now();
+  const ramSafeguardThresholdMb = 150;
 
-  // Safeguard: skip if free RAM < 300MB unless force is true
-  if (freeRamMb < 300 && !options.force) {
+  // Safeguard: skip if free RAM < 150MB unless force is true
+  if (freeRamMb < ramSafeguardThresholdMb && !options.force) {
+    const reason = `Free RAM (${Math.round(freeRamMb)}MB) is below safeguard (${ramSafeguardThresholdMb}MB). Pass --force to run anyway.`;
     const report: HermesDreamReport = {
       id: randomUUID(),
       session_id: options.session_id,
       input_delta_count: 0,
-      output_json: JSON.stringify({ skipped: true, reason: "Skipped: free RAM < 300MB safeguard" }),
+      output_json: JSON.stringify({ skipped: true, reason }),
       facts_added: 0,
+      facts_reinforced: 0,
       facts_superseded: 0,
       patterns_found: 0,
       timestamp: now,
+      skipped: true,
+      skip_reason: reason,
     };
     return report;
   }
 
   // 1. Watermark: read last_dreamed_message_id
   const watermarkRow = db.query(`SELECT value FROM meta WHERE key = 'last_dreamed_message_id'`).get() as any;
-  const lastId = watermarkRow ? parseInt(watermarkRow.value, 10) : 0;
+  let lastId = watermarkRow ? parseInt(watermarkRow.value, 10) : 0;
+
+  if (options.reset_watermark || (options.force && options.use_llm)) {
+    lastId = 0;
+  } else if (options.from_id !== undefined) {
+    lastId = options.from_id;
+  } else if (options.rewind !== undefined) {
+    lastId = Math.max(0, lastId - options.rewind);
+  }
   const batchSize = options.batch_size || 100;
 
   // 2. Fetch delta notes since watermark
@@ -263,6 +285,7 @@ export async function runHermesDreamerPass(
       input_delta_count: 0,
       output_json: JSON.stringify({ message: "No new delta notes to process" }),
       facts_added: 0,
+      facts_reinforced: 0,
       facts_superseded: 0,
       patterns_found: 0,
       timestamp: now,
@@ -270,6 +293,7 @@ export async function runHermesDreamerPass(
   }
 
   let factsAdded = 0;
+  let factsReinforced = 0;
   let factsSuperseded = 0;
   let patternsFound = 0;
 
@@ -302,11 +326,14 @@ export async function runHermesDreamerPass(
             const upsertRes = await upsertFact(db, {
               subject: t.subject,
               predicate: t.predicate,
+              raw_predicate: t.raw_predicate,
               object: t.object,
+              content: item.fact,
               confidence: item.confidence ?? 0.95,
               source_session: options.session_id,
             });
             if (upsertRes.action === "inserted") factsAdded++;
+            else if (upsertRes.action === "reinforced") factsReinforced++;
             else if (upsertRes.action === "superseded") factsSuperseded++;
           }
         } else if (item.fact) {
@@ -348,11 +375,14 @@ export async function runHermesDreamerPass(
     for (const note of deltaNotes) {
       const triples = extractTriples(note.content);
       for (const t of triples) {
+        const factText = `${t.subject} ${(t.raw_predicate || t.predicate).toLowerCase()} ${t.object}`;
         if (!options.dry_run) {
           const upsertRes = await upsertFact(db, {
             subject: t.subject,
             predicate: t.predicate,
+            raw_predicate: t.raw_predicate,
             object: t.object,
+            content: note.content,
             peer: note.peer,
             source_session: note.session_id,
             confidence: 0.90, // High confidence reflection fact
@@ -360,15 +390,17 @@ export async function runHermesDreamerPass(
 
           if (upsertRes.action === "inserted") {
             factsAdded++;
-            newFactsOutput.push({ fact: `${t.subject} ${t.predicate.toLowerCase()} ${t.object}`, type: "attribute", confidence: 0.90 });
+            newFactsOutput.push({ fact: factText, type: "attribute", confidence: 0.90 });
             cardUpdates.push(`${t.subject} ${t.predicate} ${t.object}`);
+          } else if (upsertRes.action === "reinforced") {
+            factsReinforced++;
           } else if (upsertRes.action === "superseded") {
             factsSuperseded++;
             supersededOutput.push({ old_fact_id: upsertRes.fact_id, reason: "Opposite polarity conflict healed by recency" });
           }
         } else {
           factsAdded++;
-          newFactsOutput.push({ fact: `${t.subject} ${t.predicate.toLowerCase()} ${t.object}`, type: "attribute", confidence: 0.90 });
+          newFactsOutput.push({ fact: factText, type: "attribute", confidence: 0.90 });
         }
       }
 
@@ -423,6 +455,7 @@ export async function runHermesDreamerPass(
     input_delta_count: deltaNotes.length,
     output_json: outputJson,
     facts_added: factsAdded,
+    facts_reinforced: factsReinforced,
     facts_superseded: factsSuperseded,
     patterns_found: patternsFound,
     timestamp: now,

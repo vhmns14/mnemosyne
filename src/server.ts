@@ -610,16 +610,24 @@ try {
       return Response.json({ success: true, scan }, { headers: corsHeaders });
     }
 
-    // Autonomous Sleep & Dreamer Pass
-    if (method === "POST" && url.pathname === "/v1/memory/dream") {
+    // Unified Autonomous Sleep & Dreamer Pass (POST /v1/memory/dream, POST /v1/dream, POST /dream)
+    if (method === "POST" && (url.pathname === "/v1/memory/dream" || url.pathname === "/v1/dream" || url.pathname === "/dream")) {
       try {
         const body = (await req.json().catch(() => ({}))) as any;
         const report = await engine.dream({
-          decay_days: body?.decay_days,
-          min_cluster_size: body?.min_cluster_size,
-          dry_run: body?.dry_run,
+          session_id: body?.session_id,
+          batch_size: body?.batch_size,
+          decay_days: body?.decay_days ? parseInt(body.decay_days, 10) : undefined,
+          min_cluster_size: body?.min_cluster_size ? parseInt(body.min_cluster_size, 10) : undefined,
+          dry_run: Boolean(body?.dry_run),
+          use_llm: body?.use_llm !== undefined ? Boolean(body.use_llm) : (body?.llm !== undefined ? Boolean(body.llm) : undefined),
+          force: Boolean(body?.force),
+          reset_watermark: Boolean(body?.reset_watermark),
+          from_id: body?.from_id ? parseInt(body.from_id, 10) : undefined,
+          rewind: body?.rewind ? parseInt(body.rewind, 10) : undefined,
+          pass: body?.pass,
         });
-        return Response.json({ success: true, report }, { headers: corsHeaders });
+        return Response.json({ success: true, report, dream: report.hermes }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
       }
@@ -737,8 +745,8 @@ try {
       return Response.json({ success: true, card }, { headers: corsHeaders });
     }
 
-    // Hermes Ingest Protocol (POST /ingest and POST /v1/ingest)
-    if (method === "POST" && (url.pathname === "/ingest" || url.pathname === "/v1/ingest")) {
+    // Hermes Ingest Protocol (POST /ingest, POST /v1/ingest, and POST /v1/memory/ingest)
+    if (method === "POST" && (url.pathname === "/ingest" || url.pathname === "/v1/ingest" || url.pathname === "/v1/memory/ingest")) {
       try {
         const body = (await req.json()) as any;
         if (!body.content && !body.fact && !body.text) {
@@ -792,22 +800,6 @@ try {
           },
           { headers: corsHeaders }
         );
-      } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
-      }
-    }
-
-    // Hermes Background Dreamer (POST /dream and POST /v1/dream)
-    if (method === "POST" && (url.pathname === "/dream" || url.pathname === "/v1/dream")) {
-      try {
-        const body = (await req.json().catch(() => ({}))) as any;
-        const report = await engine.dreamHermes({
-          session_id: body?.session_id,
-          batch_size: body?.batch_size,
-          force: Boolean(body?.force),
-          dry_run: Boolean(body?.dry_run),
-        });
-        return Response.json({ success: true, dream: report }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
       }

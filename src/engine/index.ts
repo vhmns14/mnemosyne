@@ -27,6 +27,7 @@ import { anchorMemory, checkMemoryStaleness, scanWorkspaceStaleness } from "./st
 import { runDreamerPass, runHermesDreamerPass } from "./dreamer.ts";
 import { BlackboardManager } from "./blackboard.ts";
 import { L1HotCache } from "./cache.ts";
+import { randomUUID } from "node:crypto";
 import type { 
   RecallOptions, RememberOptions, ScoredMemory, MemoryRecord, PersonaProfile, 
   ConsolidationReport, RemediationPlaybook, ReflectionRecord, 
@@ -37,7 +38,7 @@ import type {
   DreamReport, DreamOptions, CacheStats,
   GitHookResult, DreamerTimerResult, SessionPrimer,
   FactInput, UpsertFactResult, StandingCard, DeleteBySourceOptions, DeleteBySourceResult,
-  IngestOptions, IngestResult, HermesStats, HermesDreamReport
+  IngestOptions, IngestResult, HermesStats, HermesDreamReport, UnifiedDreamReport
 } from "../types.ts";
 
 export class MnemosyneEngine {
@@ -510,13 +511,6 @@ export class MnemosyneEngine {
   }
 
   /**
-   * Autonomous Hippocampal Sleep & Dreamer Pass.
-   */
-  async dream(options?: DreamOptions): Promise<DreamReport> {
-    return runDreamerPass(this.db, options);
-  }
-
-  /**
    * Multi-Agent Epistemic Blackboard Manager.
    */
   get blackboard(): BlackboardManager {
@@ -642,22 +636,96 @@ export class MnemosyneEngine {
   }
 
   /**
-   * Hippocampal Sleep & Dreamer Pass (MemGPT / Stanford Generative Agents style).
+   * Unified Autonomous Dreamer Pass.
+   * Integrates Hermes delta reflection (notes -> facts, patterns, card updates)
+   * and Hippocampal sleep pass (thematic clustering, Ebbinghaus decay, edge compaction).
    */
-  async dream(options?: DreamOptions & { session_id?: string; batch_size?: number; force?: boolean }): Promise<any> {
-    if (options && (options.decay_days !== undefined || options.min_cluster_size !== undefined || (options as any).prune_threshold_days !== undefined)) {
-      return runDreamerPass(this.db, options);
+  async dream(options?: DreamOptions & {
+    session_id?: string;
+    batch_size?: number;
+    force?: boolean;
+    dry_run?: boolean;
+    use_llm?: boolean;
+    reset_watermark?: boolean;
+    from_id?: number;
+    rewind?: number;
+    pass?: "all" | "delta" | "hippocampal";
+  }): Promise<UnifiedDreamReport> {
+    const startTime = Date.now();
+    const runDelta = !options?.pass || options.pass === "all" || options.pass === "delta";
+    const runHippo = !options?.pass || options.pass === "all" || options.pass === "hippocampal";
+
+    let hermesReport: HermesDreamReport = {
+      id: randomUUID(),
+      session_id: options?.session_id,
+      input_delta_count: 0,
+      output_json: "{}",
+      facts_added: 0,
+      facts_reinforced: 0,
+      facts_superseded: 0,
+      patterns_found: 0,
+      timestamp: startTime,
+    };
+
+    let hippoReport: DreamReport = {
+      timestamp: startTime,
+      synthesized_reflections: 0,
+      pruned_stale_memories: 0,
+      compacted_graph_edges: 0,
+      execution_ms: 0,
+      details: [],
+    };
+
+    if (runDelta) {
+      hermesReport = await runHermesDreamerPass(this.db, {
+        session_id: options?.session_id,
+        batch_size: options?.batch_size,
+        force: options?.force,
+        dry_run: options?.dry_run,
+        use_llm: options?.use_llm,
+        reset_watermark: options?.reset_watermark,
+        from_id: options?.from_id,
+        rewind: options?.rewind,
+      });
     }
-    if (options && (options.session_id !== undefined || options.batch_size !== undefined)) {
-      return runHermesDreamerPass(this.db, options);
+
+    if (runHippo) {
+      hippoReport = await runDreamerPass(this.db, options);
     }
-    return runDreamerPass(this.db, options);
+
+    const executionMs = Date.now() - startTime;
+
+    return {
+      timestamp: startTime,
+      input_delta_count: hermesReport.input_delta_count,
+      facts_added: hermesReport.facts_added,
+      facts_reinforced: hermesReport.facts_reinforced,
+      facts_superseded: hermesReport.facts_superseded,
+      patterns_found: hermesReport.patterns_found,
+      synthesized_reflections: hippoReport.synthesized_reflections,
+      pruned_stale_memories: hippoReport.pruned_stale_memories,
+      compacted_graph_edges: hippoReport.compacted_graph_edges,
+      execution_ms: executionMs,
+      hermes: hermesReport,
+      hippocampal: hippoReport,
+      skipped: hermesReport.skipped,
+      skip_reason: hermesReport.skip_reason,
+    };
   }
 
   /**
-   * Hermes Background Reflection Dreamer (Honcho-style delta pass).
+   * Hermes Background Reflection Dreamer (Honcho-style delta pass only).
    */
-  async dreamHermes(options?: { session_id?: string; batch_size?: number; force?: boolean; dry_run?: boolean; use_llm?: boolean }): Promise<HermesDreamReport> {
+  async dreamHermes(options?: {
+    session_id?: string;
+    batch_size?: number;
+    force?: boolean;
+    dry_run?: boolean;
+    use_llm?: boolean;
+    reset_watermark?: boolean;
+    from_id?: number;
+    rewind?: number;
+  }): Promise<HermesDreamReport> {
     return runHermesDreamerPass(this.db, options);
   }
 

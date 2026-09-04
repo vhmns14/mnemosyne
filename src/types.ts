@@ -132,12 +132,15 @@ export interface RememberOptions {
   peer?: string;
   source_session?: string;
   memory_type?: "declarative" | "imperative";
+  skip_note_log?: boolean;
 }
 
 export interface FactInput {
   subject: string;
   predicate: string;
   object: string;
+  content?: string;
+  raw_predicate?: string;
   scope?: MemoryScope;
   category?: MemoryCategory;
   peer?: string;
@@ -500,9 +503,29 @@ export interface HermesDreamReport {
   input_delta_count: number;
   output_json: string;
   facts_added: number;
+  facts_reinforced: number;
   facts_superseded: number;
   patterns_found: number;
   timestamp: number;
+  skipped?: boolean;
+  skip_reason?: string;
+}
+
+export interface UnifiedDreamReport {
+  timestamp: number;
+  input_delta_count: number;
+  facts_added: number;
+  facts_reinforced: number;
+  facts_superseded: number;
+  patterns_found: number;
+  synthesized_reflections: number;
+  pruned_stale_memories: number;
+  compacted_graph_edges: number;
+  execution_ms: number;
+  hermes: HermesDreamReport;
+  hippocampal: DreamReport;
+  skipped?: boolean;
+  skip_reason?: string;
 }
 
 export interface HermesStats {

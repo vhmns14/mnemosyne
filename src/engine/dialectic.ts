@@ -76,24 +76,27 @@ export function extractTriples(text: string): Array<{ subject: string; predicate
   }
 
   // Pattern B: Declarative verbs (EN + ID)
-  const verbRegex = /([A-Za-z0-9_\-\.\s]+?)\s+(prefers|likes|dislikes|loves|hates|uses|requires|needs|builds with|deploys via|deploys to|runs on|is constrained by|suka|benci|tidak suka|gemar|memerlukan|menggunakan|memakai|berjalan di|mendeploy ke|menyimpan data di)\s+([A-Za-z0-9_\-\.\s]+)/i;
+  const verbRegex = /([A-Za-z0-9_\-\.\s]+?)\s+(prefers?|likes?|dislikes?|loves?|hates?|uses?|requires?|needs?|builds with|deploys via|deploys to|runs on|is constrained by|suka|benci|tidak suka|gemar|memerlukan|menggunakan|memakai|berjalan di|mendeploy ke|menyimpan data di)\s+([A-Za-z0-9_\-\.\s]+)/i;
   const match = normalized.match(verbRegex);
   if (match) {
     const subject = match[1].trim();
-    let predicate = match[2].trim().toUpperCase().replace(/\s+/g, "_");
+    const raw_predicate = match[2].trim();
+    let predicate = raw_predicate.toUpperCase().replace(/\s+/g, "_");
     
     // Normalize Indonesian & synonym predicates to canonical English predicates
-    if (predicate === "MENGGUNAKAN" || predicate === "MEMAKAI") predicate = "USES";
-    else if (predicate === "SUKA" || predicate === "GEMAR" || predicate === "LOVES") predicate = "LIKES";
-    else if (predicate === "BENCI" || predicate === "TIDAK_SUKA" || predicate === "HATES") predicate = "DISLIKES";
+    if (predicate === "PREFER" || predicate === "PREFERS") predicate = "PREFERS";
+    else if (predicate === "LIKE" || predicate === "LIKES" || predicate === "SUKA" || predicate === "GEMAR" || predicate === "LOVES" || predicate === "LOVE") predicate = "LIKES";
+    else if (predicate === "DISLIKE" || predicate === "DISLIKES" || predicate === "BENCI" || predicate === "TIDAK_SUKA" || predicate === "HATE" || predicate === "HATES") predicate = "DISLIKES";
+    else if (predicate === "USE" || predicate === "USES" || predicate === "MENGGUNAKAN" || predicate === "MEMAKAI") predicate = "USES";
     else if (predicate === "BERJALAN_DI") predicate = "RUNS_ON";
     else if (predicate === "MENDEPLOY_KE") predicate = "DEPLOYS_TO";
-    else if (predicate === "MEMERLUKAN") predicate = "REQUIRES";
+    else if (predicate === "REQUIRE" || predicate === "REQUIRES" || predicate === "MEMERLUKAN") predicate = "REQUIRES";
+    else if (predicate === "NEED" || predicate === "NEEDS") predicate = "NEEDS";
     else if (predicate === "MENYIMPAN_DATA_DI") predicate = "STORES_DATA_IN";
 
     const object = match[3].trim().replace(/[.,;]$/, "");
     if (subject && predicate && object) {
-      triples.push({ subject, predicate, object });
+      triples.push({ subject, predicate, object, raw_predicate });
     }
   }
 
@@ -325,6 +328,16 @@ export async function rememberMemory(
   // Record creation event in immutable ledger (Mem0 2026 style)
   recordMemoryEvent(db, id, "CREATED", content, options.actor || "user");
 
+  // Layer 3 (Notes): Append to notes raw history so delta dreamer sees all inputs
+  if (!options.skip_note_log) {
+    try {
+      db.prepare(`
+        INSERT INTO notes (peer, session_id, role, content, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(peer, sourceSession, options.actor || "user", content, now);
+    } catch {}
+  }
+
   // 5. Store vector embedding
   const buffer = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
   db.prepare(`
@@ -538,6 +551,7 @@ export async function upsertFact(
   fact: FactInput
 ): Promise<UpsertFactResult> {
   const subject = fact.subject.trim();
+  const rawPred = fact.raw_predicate || fact.predicate;
   let predicate = fact.predicate.trim().toUpperCase().replace(/\s+/g, "_");
 
   // Normalize Indonesian verbs to canonical predicates
@@ -552,6 +566,11 @@ export async function upsertFact(
   const sourceSession = fact.source_session || null;
   const importance = fact.importance || (predicate === "LIKES" ? "high" : "normal");
   const now = Date.now();
+
+  const formattedContent = fact.content?.trim() || 
+    (fact.raw_predicate 
+      ? `${subject} ${fact.raw_predicate.toLowerCase()} ${object}`
+      : `${subject} ${predicate.toLowerCase()} ${object}`);
 
   // 1. Honcho Self-Healing Conflict Resolution (Antonym / Polarity Check)
   const oppositePred = OPPOSITES[predicate];
@@ -570,7 +589,7 @@ export async function upsertFact(
       // Contradiction detected! Resolution by recency: newer fact supersedes older fact.
       const newMemoryId = randomUUID();
       const newTripleId = randomUUID();
-      const content = `${subject} ${predicate.toLowerCase()} ${object}`;
+      const content = formattedContent;
 
       db.query(`UPDATE entity_triples SET is_active = 0, valid_until = ? WHERE id = ?`)
         .run(now, conflicting.triple_id);
@@ -599,6 +618,7 @@ export async function upsertFact(
         peer,
         source_session: sourceSession,
         entities: [{ subject, predicate, object }],
+        skip_note_log: true,
       });
 
       return {
@@ -654,7 +674,7 @@ export async function upsertFact(
     // Case B: Value update (e.g. "dek suka americano" -> "dek suka latte")
     const newMemoryId = randomUUID();
     const newTripleId = randomUUID();
-    const content = `${subject} ${predicate.toLowerCase()} ${object}`;
+    const content = formattedContent;
 
     db.query(`UPDATE entity_triples SET is_active = 0, valid_until = ? WHERE id = ?`)
       .run(now, existing.triple_id);
@@ -681,6 +701,7 @@ export async function upsertFact(
       peer,
       source_session: sourceSession,
       entities: [{ subject, predicate, object }],
+      skip_note_log: true,
     });
 
     return {
@@ -695,7 +716,7 @@ export async function upsertFact(
   }
 
   // 3. Brand new fact -> Insert
-  const content = `${subject} ${predicate.toLowerCase()} ${object}`;
+  const content = formattedContent;
   const memId = await rememberMemory(db, {
     content,
     scope,
@@ -704,6 +725,7 @@ export async function upsertFact(
     peer,
     source_session: sourceSession,
     entities: [{ subject, predicate, object }],
+    skip_note_log: true,
   });
 
   const triple = db.query(`
@@ -735,7 +757,9 @@ export async function extractAndUpsert(
     const res = await upsertFact(db, {
       subject: t.subject,
       predicate: t.predicate,
+      raw_predicate: t.raw_predicate,
       object: t.object,
+      content: text,
       ...options,
     });
     results.push(res);
@@ -888,12 +912,8 @@ export async function ingestMessageOrFact(
     };
   }
 
-  // 3. If explicit fact, declarative statement, or contains actionable preference/attribute
-  const isFact = options.is_fact !== false && (
-    options.is_fact === true ||
-    options.type === "declarative" ||
-    /\b(suka|benci|uses|likes|dislikes|prefers|requires|needs|berjalan di|listens on)\b/i.test(content)
-  );
+  // 3. Promote to facts layer only if explicitly requested (is_fact: true or type: "declarative")
+  const isFact = options.is_fact === true || options.type === "declarative";
 
   if (isFact) {
     const ttlMs = options.ttl_ms ? now + options.ttl_ms : undefined;
@@ -908,7 +928,9 @@ export async function ingestMessageOrFact(
         mainRes = await upsertFact(db, {
           subject: t.subject,
           predicate: t.predicate,
+          raw_predicate: t.raw_predicate,
           object: t.object,
+          content,
           peer,
           source_session: sessionId,
           confidence,
@@ -938,6 +960,7 @@ export async function ingestMessageOrFact(
         valid_until: ttlMs,
         memory_type: options.type || "declarative",
         confidence,
+        skip_note_log: true,
       });
 
       evictLowScoreFacts(db, 1000);
