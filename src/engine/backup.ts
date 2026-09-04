@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, statSync, copyFileSync, unlinkSync } from "node:fs";
-import { join, resolve, basename } from "node:path";
+import { join, resolve, basename, dirname } from "node:path";
 import { homedir } from "node:os";
 import { CONFIG } from "../config.ts";
 
@@ -19,8 +19,10 @@ export interface BackupResult {
   message?: string;
 }
 
-export function getDefaultBackupDir(): string {
-  const dir = join(homedir(), ".mnemosyne", "backups");
+export function getDefaultBackupDir(customDbPath?: string): string {
+  const activePath = customDbPath || CONFIG.DB_PATH;
+  const dbDir = dirname(resolve(activePath));
+  const dir = join(dbDir, "backups");
   if (!existsSync(dir)) {
     try {
       mkdirSync(dir, { recursive: true });
@@ -36,7 +38,7 @@ export function getDefaultBackupDir(): string {
  * Does not block readers or writers and produces a clean, defragmented .db file.
  */
 export function createBackup(db: Database, targetDir?: string): BackupResult {
-  const dir = targetDir ? resolve(targetDir) : getDefaultBackupDir();
+  const dir = targetDir ? resolve(targetDir) : getDefaultBackupDir(db.filename);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
@@ -72,8 +74,8 @@ export function createBackup(db: Database, targetDir?: string): BackupResult {
 /**
  * Lists all existing backups in the backup directory, sorted from newest to oldest.
  */
-export function listBackups(targetDir?: string): BackupRecord[] {
-  const dir = targetDir ? resolve(targetDir) : getDefaultBackupDir();
+export function listBackups(targetDir?: string, customDbPath?: string): BackupRecord[] {
+  const dir = targetDir ? resolve(targetDir) : getDefaultBackupDir(customDbPath);
   if (!existsSync(dir)) return [];
 
   const files = readdirSync(dir).filter((f) => f.endsWith(".db") && f.startsWith("mnemosyne-backup-"));

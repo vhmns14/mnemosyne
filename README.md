@@ -15,7 +15,7 @@
 
 SOTA memory architectures offer profound concepts, but their implementations are notoriously heavy:
 - **Honcho / Zep / Letta (MemGPT)**: Often require Docker, PostgreSQL, Qdrant/Milvus, Redis, and multi-gigabyte Python microservices that burn laptop RAM and CPU.
-- **Mnemosyne**: Distills the mathematical and cognitive essence of these systems into a **sub-35MB RAM, single Bun process backed by SQLite WAL**, booting in `<20ms` with `<15ms` retrieval latensi.
+- **Mnemosyne**: Distills the mathematical and cognitive essence of these systems into a **verified ~37MB RSS RAM, single Bun process backed by SQLite WAL**, booting in `<20ms` with `<15ms` retrieval latensi.
 
 ---
 
@@ -106,7 +106,13 @@ bun run bin/mnemo.ts consolidate
 bun run bin/mnemo.ts profile
 
 # Inspect Holographic Knowledge Graph
-bun run bin/mnemo.ts graph
+mnemo graph
+
+# Export portable memory pack (safely shareable without .db files, verified with SHA-256)
+mnemo export team-guidelines.json -s global
+
+# Import portable memory pack into database & rebuild vector index locally
+mnemo import team-guidelines.json
 ```
 
 ---

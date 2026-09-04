@@ -25,6 +25,12 @@ export const CONFIG = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || "",
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
   OPENAI_EMBEDDING_MODEL: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
+
+  // LLM Synthesis (Honcho-style Dreaming Pass)
+  LLM_ENABLED: process.env.MNEMO_LLM_ENABLED === "true",
+  LLM_URL: process.env.MNEMO_LLM_URL || "http://localhost:8787/v1/chat/completions",
+  LLM_API_KEY: process.env.MNEMO_LLM_KEY || "",
+  LLM_MODEL: process.env.MNEMO_LLM_MODEL || "gpt-5.6-sol",
   
   // REST API Daemon
   PORT: parseInt(process.env.MNEMO_PORT || "8788", 10),

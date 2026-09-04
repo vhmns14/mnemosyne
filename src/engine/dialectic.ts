@@ -33,7 +33,7 @@ export function isTransactionalNoise(text: string, category?: string): boolean {
   const lower = text.toLowerCase().trim();
   if (
     /^(done|ok|sip|siap|sedang mengerjakan|working on|in progress|step \d|running command|exit code \d|stdout:|stderr:)/i.test(lower) ||
-    /\b(running test|npm install|git commit|git push|building project)\b/i.test(lower)
+    /\b(running test|npm install|bun install|git commit|git push|building project|task completed|task in progress|build finished|opennextjs-cloudflare)\b/i.test(lower)
   ) {
     return true;
   }
@@ -92,6 +92,26 @@ export function extractTriples(text: string): Array<{ subject: string; predicate
       predicate: "FORBIDS",
       object: normalized.slice(0, 100),
     });
+  }
+
+  // Pattern D: Alias & Acronym Auto-Canonicalization
+  // e.g. "gw alias albatross-gateway", "gw aka albatross-gateway", "albatross-gateway (gw)"
+  const aliasMatch = normalized.match(/([A-Za-z0-9_\-]+)\s+(?:alias|aka|known as|disebut juga|is alias of)\s+([A-Za-z0-9_\-]+)/i);
+  if (aliasMatch) {
+    triples.push({
+      subject: aliasMatch[1].trim().toLowerCase(),
+      predicate: "ALIAS_OF",
+      object: aliasMatch[2].trim(),
+    });
+  } else {
+    const parenMatch = normalized.match(/([A-Za-z0-9_\-]+)\s*\(([A-Za-z0-9_\-]+)\)/i);
+    if (parenMatch) {
+      triples.push({
+        subject: parenMatch[2].trim().toLowerCase(),
+        predicate: "ALIAS_OF",
+        object: parenMatch[1].trim(),
+      });
+    }
   }
 
   return triples;
@@ -331,6 +351,11 @@ export async function rememberMemory(
       INSERT INTO entity_triples (id, subject, predicate, object, memory_id, confidence, is_active, valid_from, valid_until, created_at)
       VALUES (?, ?, ?, ?, ?, 1.0, 1, ?, ?, ?)
     `).run(tripleId, t.subject, t.predicate, t.object, id, validFrom, validUntil, now);
+
+    // Auto-canonicalize: register alias automatically
+    if (t.predicate === "ALIAS_OF" || t.predicate === "ALIAS") {
+      addEntityAlias(db, t.subject, t.object);
+    }
   }
 
   return id;

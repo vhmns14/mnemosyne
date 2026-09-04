@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import type { DreamReport, DreamOptions, HermesDreamReport, HermesDreamContract } from "../types.ts";
+import { CONFIG } from "../config.ts";
 import { clusterMemories } from "./cluster.ts";
 import { extractTriples, upsertFact } from "./dialectic.ts";
 
@@ -132,11 +133,86 @@ export async function runDreamerPass(
 }
 
 /**
+ * Optional LLM synthesis pass (Honcho-style pattern synthesis).
+ * Calls OpenAI-compatible endpoint (9router, Ollama, OpenAI) to generate rich pattern contract.
+ * Automatically falls back to null on failure, timeout, or parse error.
+ */
+export async function callLlmSynthesis(
+  deltaNotes: Array<{ id: number; peer: string; content: string }>,
+  existingFacts: string[],
+  customOptions?: { url?: string; apiKey?: string; model?: string }
+): Promise<HermesDreamContract | null> {
+  const url = customOptions?.url || CONFIG.LLM_URL;
+  const apiKey = customOptions?.apiKey || CONFIG.LLM_API_KEY;
+  const model = customOptions?.model || CONFIG.LLM_MODEL;
+
+  const prompt = `Review the chronological conversation delta notes and synthesize durable long-term memories.
+
+Current Standing Facts:
+${existingFacts.length > 0 ? existingFacts.slice(0, 15).map((f) => "- " + f).join("\n") : "(none)"}
+
+New Delta Notes:
+${deltaNotes.map((n) => `[Note #${n.id}] (${n.peer}): ${n.content}`).join("\n")}
+
+Respond ONLY with valid JSON conforming to this schema (no markdown, no backticks, no comments):
+{
+  "new_facts": [
+    { "fact": "subject predicate object", "type": "preference" | "attribute" | "fact", "confidence": 0.9 }
+  ],
+  "supersede": [
+    { "old_fact_id": "string", "reason": "string" }
+  ],
+  "patterns": [
+    { "pattern": "concise workflow or habit pattern", "type": "behavior" | "preference" | "workflow", "confidence": 0.85, "sources": [1] }
+  ],
+  "card_updates": [
+    "short standing fact"
+  ]
+}`;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000); // 6s timeout
+
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: "You are a concise long-term memory synthesis engine. Respond only with raw JSON." },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.1,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as any;
+    const content = data.choices?.[0]?.message?.content?.trim();
+    if (!content) return null;
+
+    const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    const contract = JSON.parse(cleaned) as HermesDreamContract;
+    return contract;
+  } catch {
+    clearTimeout(timeoutId);
+    return null;
+  }
+}
+
+/**
  * Hermes Background Dreamer (Honcho-style reflection over message deltas)
  */
 export async function runHermesDreamerPass(
   db: Database,
-  options: { session_id?: string; batch_size?: number; force?: boolean; dry_run?: boolean } = {}
+  options: { session_id?: string; batch_size?: number; force?: boolean; dry_run?: boolean; use_llm?: boolean } = {}
 ): Promise<HermesDreamReport> {
   const freeRamMb = os.freemem() / (1024 * 1024);
   const now = Date.now();
@@ -202,48 +278,116 @@ export async function runHermesDreamerPass(
   const patternsOutput: Array<{ pattern: string; type: "behavior" | "preference" | "workflow"; confidence: number; sources: (string | number)[] }> = [];
   const cardUpdates: string[] = [];
 
-  for (const note of deltaNotes) {
-    const triples = extractTriples(note.content);
-    for (const t of triples) {
-      if (!options.dry_run) {
-        const upsertRes = await upsertFact(db, {
-          subject: t.subject,
-          predicate: t.predicate,
-          object: t.object,
-          peer: note.peer,
-          source_session: note.session_id,
-          confidence: 0.90, // High confidence reflection fact
-        });
+  // 3. Try LLM Synthesis if enabled
+  const shouldTryLlm = options.use_llm !== false && (CONFIG.LLM_ENABLED || options.use_llm === true);
+  let llmContract: HermesDreamContract | null = null;
 
-        if (upsertRes.action === "inserted") {
+  if (shouldTryLlm) {
+    try {
+      const existingRows = db.query("SELECT content FROM memories WHERE is_active = 1 LIMIT 15").all() as any[];
+      const existingFacts = existingRows.map((r) => r.content);
+      llmContract = await callLlmSynthesis(deltaNotes, existingFacts);
+    } catch {
+      llmContract = null;
+    }
+  }
+
+  // Path A: If LLM produced a valid contract, apply it
+  if (llmContract && (llmContract.new_facts?.length || llmContract.patterns?.length)) {
+    if (Array.isArray(llmContract.new_facts)) {
+      for (const item of llmContract.new_facts) {
+        if (!options.dry_run && item.fact) {
+          const triples = extractTriples(item.fact);
+          for (const t of triples) {
+            const upsertRes = await upsertFact(db, {
+              subject: t.subject,
+              predicate: t.predicate,
+              object: t.object,
+              confidence: item.confidence ?? 0.95,
+              source_session: options.session_id,
+            });
+            if (upsertRes.action === "inserted") factsAdded++;
+            else if (upsertRes.action === "superseded") factsSuperseded++;
+          }
+        } else if (item.fact) {
           factsAdded++;
-          newFactsOutput.push({ fact: `${t.subject} ${t.predicate.toLowerCase()} ${t.object}`, type: "attribute", confidence: 0.90 });
-          cardUpdates.push(`${t.subject} ${t.predicate} ${t.object}`);
-        } else if (upsertRes.action === "superseded") {
-          factsSuperseded++;
-          supersededOutput.push({ old_fact_id: upsertRes.fact_id, reason: "Opposite polarity conflict healed by recency" });
         }
-      } else {
-        factsAdded++;
-        newFactsOutput.push({ fact: `${t.subject} ${t.predicate.toLowerCase()} ${t.object}`, type: "attribute", confidence: 0.90 });
+        newFactsOutput.push({
+          fact: item.fact,
+          type: item.type || "fact",
+          confidence: item.confidence ?? 0.95,
+        });
       }
     }
 
-    // Pattern recognition: detect habitual patterns ("selalu", "prefer", "biasanya", "workflow")
-    if (/\b(selalu|always|prefer|suka menggunakan|biasanya|kebiasaan)\b/i.test(note.content)) {
-      const patId = randomUUID();
-      const patternText = note.content.trim();
-      const sources = [note.id];
-      const confidence = 0.85;
-
-      if (!options.dry_run) {
-        db.query(`
-          INSERT INTO patterns (id, peer, pattern, type, confidence, sources, timestamp, updated_at)
-          VALUES (?, ?, ?, 'preference', ?, ?, ?, ?)
-        `).run(patId, note.peer, patternText, confidence, JSON.stringify(sources), now, now);
+    if (Array.isArray(llmContract.patterns)) {
+      for (const p of llmContract.patterns) {
+        if (!options.dry_run && p.pattern) {
+          const patId = randomUUID();
+          db.query(`
+            INSERT INTO patterns (id, peer, pattern, type, confidence, sources, timestamp, updated_at)
+            VALUES (?, 'hermes', ?, ?, ?, ?, ?, ?)
+          `).run(patId, p.pattern, p.type || "preference", p.confidence ?? 0.85, JSON.stringify(p.sources || []), now, now);
+        }
+        patternsFound++;
+        patternsOutput.push(p);
       }
-      patternsFound++;
-      patternsOutput.push({ pattern: patternText, type: "preference", confidence, sources });
+    }
+
+    if (Array.isArray(llmContract.card_updates)) {
+      cardUpdates.push(...llmContract.card_updates);
+    }
+
+    if (Array.isArray(llmContract.supersede)) {
+      for (const s of llmContract.supersede) {
+        supersededOutput.push({ old_fact_id: s.old_fact_id, reason: s.reason || "Superseded by LLM synthesis" });
+      }
+    }
+  } else {
+    // Path B: Fast Offline Heuristic Synthesis (0 MB extra RAM fallback)
+    for (const note of deltaNotes) {
+      const triples = extractTriples(note.content);
+      for (const t of triples) {
+        if (!options.dry_run) {
+          const upsertRes = await upsertFact(db, {
+            subject: t.subject,
+            predicate: t.predicate,
+            object: t.object,
+            peer: note.peer,
+            source_session: note.session_id,
+            confidence: 0.90, // High confidence reflection fact
+          });
+
+          if (upsertRes.action === "inserted") {
+            factsAdded++;
+            newFactsOutput.push({ fact: `${t.subject} ${t.predicate.toLowerCase()} ${t.object}`, type: "attribute", confidence: 0.90 });
+            cardUpdates.push(`${t.subject} ${t.predicate} ${t.object}`);
+          } else if (upsertRes.action === "superseded") {
+            factsSuperseded++;
+            supersededOutput.push({ old_fact_id: upsertRes.fact_id, reason: "Opposite polarity conflict healed by recency" });
+          }
+        } else {
+          factsAdded++;
+          newFactsOutput.push({ fact: `${t.subject} ${t.predicate.toLowerCase()} ${t.object}`, type: "attribute", confidence: 0.90 });
+        }
+      }
+
+      // Pattern recognition: detect habitual patterns ("selalu", "prefer", "biasanya", "workflow")
+      if (/\b(selalu|always|prefer|suka menggunakan|biasanya|kebiasaan)\b/i.test(note.content)) {
+        const patId = randomUUID();
+        const patternText = note.content.trim();
+        const sources = [note.id];
+        const confidence = 0.85;
+
+        if (!options.dry_run) {
+          db.query(`
+            INSERT INTO patterns (id, peer, pattern, type, confidence, sources, timestamp, updated_at)
+            VALUES (?, ?, ?, 'preference', ?, ?, ?, ?)
+          `).run(patId, note.peer, patternText, confidence, JSON.stringify(sources), now, now);
+        }
+        patternsFound++;
+        patternsOutput.push({ pattern: patternText, type: "preference", confidence, sources });
+      }
     }
   }
 

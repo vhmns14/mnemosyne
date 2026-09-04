@@ -1,6 +1,9 @@
 import { parseArgs } from "node:util";
+import { existsSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import { getDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
+import { isTransactionalNoise } from "./engine/dialectic.ts";
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
 
 const db = getDatabase();
@@ -128,9 +131,108 @@ export async function runCli(args: string[]) {
       session: { type: "string" },
       fact: { type: "boolean", default: false },
       force: { type: "boolean", default: false },
+      llm: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h", default: false },
     },
     allowPositionals: true,
   });
+
+  if (values.help || args.slice(1).includes("-h") || args.slice(1).includes("--help")) {
+    const subHelps: Record<string, string> = {
+      export: `
+📦 mnemo export [filename.json]
+Export portable JSON memory pack with SHA-256 checksum (zero .db files).
+
+USAGE:
+  mnemo export [file.json] [-s <all|global|project|session>]
+
+OPTIONS:
+  -s, --scope <scope>   Filter memories by scope (default: all)
+  -o, --output <file>   Alternative output file destination
+
+EXAMPLE:
+  mnemo export team-guidelines.json -s global
+`,
+      import: `
+📥 mnemo import <pack-file.json>
+Import portable memory pack into database, verifying SHA-256 integrity and re-indexing.
+
+USAGE:
+  mnemo import <file.json>
+
+REQUIREMENTS:
+  - File must have a .json extension and be a valid regular file.
+
+EXAMPLE:
+  mnemo import team-guidelines.json
+`,
+      remember: `
+🧠 mnemo remember <content> (alias: mnemo add)
+Store a new memory record into the system with bi-temporal and guardrail awareness.
+
+USAGE:
+  mnemo remember <content> [options]
+
+OPTIONS:
+  -s, --scope <scope>         Scope: global | project | session (default: global)
+  -c, --category <category>   Category: hardware | preference | architecture | rule | fact | negative_constraint
+  -i, --importance <level>    Importance: low | normal | high | critical
+  -t, --tag <tag>             Add tag (can specify multiple times)
+  --negative                  Mark as strict Negative Constraint / Anti-pattern
+  --failure <reason>          Record as a past failure lesson / pitfall
+  --until <days>              Temporal validity window in days from now
+  --supersede <query>         Invalidate older contradictory memories matching query
+`,
+      recall: `
+🔍 mnemo recall <query>
+Hybrid retrieval (vector + BM25/FTS5 + recency + spreading activation resonance).
+
+USAGE:
+  mnemo recall <query> [options]
+
+OPTIONS:
+  -l, --limit <n>             Maximum results to return (default: 5)
+  --tokens <n>                Knapsack token budget packing limit (e.g. --tokens 350)
+  -r, --resolution <res>      Resolution: macro | meso | micro (default: meso)
+  -s, --scope <scope>         Scope filter (default: all)
+`,
+      dream: `
+🌙 mnemo dream
+Runs autonomous delta reflection (notes -> facts) and hippocampal decay consolidation.
+
+USAGE:
+  mnemo dream [options]
+
+OPTIONS:
+  --dry-run                   Preview reflection without writing changes
+  --session <id>              Process delta notes for a specific session only
+  --until <days>              Decay threshold in days for hippocampal pruning (default: 14)
+  --llm                       Enable LLM synthesis pass (via 9router / Ollama / OpenAI)
+`,
+      card: `
+📇 mnemo card [peer]
+Print standing card facts (fast path, zero LLM cost, instant inject).
+
+USAGE:
+  mnemo card [peer] [-l limit]
+`,
+      stats: `
+📊 mnemo stats
+Displays storage, notes, patterns, dreams, and RAM observability metrics.
+`,
+      preflight: `
+🛡️ mnemo preflight "<command>"
+Evaluate shell command against system guardrails (16GB RAM limit, no background, no DB staging).
+`,
+    };
+
+    if (subHelps[command]) {
+      console.log(subHelps[command]);
+    } else {
+      console.log(HELP);
+    }
+    return;
+  }
 
   const contentOrQuery = positionals.join(" ").trim();
 
@@ -141,6 +243,20 @@ export async function runCli(args: string[]) {
         if (!contentOrQuery) {
           console.error("❌ Error: Please provide content to remember.");
           process.exit(1);
+        }
+
+        // Noise filter: Prevent transactional progress from cluttering facts layer unless forced
+        if (isTransactionalNoise(contentOrQuery, values.category) && !values.negative && !values.failure && !values.force) {
+          console.log(`\n\x1b[33mℹ Transactional noise detected: "${contentOrQuery.length > 50 ? contentOrQuery.slice(0, 47) + '...' : contentOrQuery}"\x1b[0m`);
+          console.log(`  Routed to Raw Notes (L3) to prevent polluting facts card. (Use --force to override).`);
+          const res = await engine.ingest({
+            content: contentOrQuery,
+            peer: values.peer || "user",
+            session_id: values.session,
+            is_fact: false,
+          });
+          console.log(`  Notes ID: \x1b[35m${res.note_id}\x1b[0m\n`);
+          break;
         }
 
         let validUntil: number | null = null;
@@ -450,13 +566,40 @@ export async function runCli(args: string[]) {
           console.error("❌ Usage: mnemo import <pack-file.json>");
           process.exit(1);
         }
-        const file = Bun.file(inFile);
-        if (!(await file.exists())) {
+
+        // Security check: only allow .json pack files
+        if (!inFile.toLowerCase().endsWith(".json")) {
+          console.error(`❌ Security Error: Only .json memory pack files are accepted for import: ${inFile}`);
+          process.exit(1);
+        }
+
+        const fullPath = resolve(inFile);
+        if (!existsSync(fullPath)) {
           console.error(`❌ Error: Pack file not found: ${inFile}`);
           process.exit(1);
         }
+
+        try {
+          const st = statSync(fullPath);
+          if (!st.isFile()) {
+            console.error(`❌ Security Error: Target is not a regular file: ${inFile}`);
+            process.exit(1);
+          }
+        } catch (e: any) {
+          console.error(`❌ Error accessing file: ${e.message}`);
+          process.exit(1);
+        }
+
+        const file = Bun.file(fullPath);
         const raw = await file.text();
-        const packData = JSON.parse(raw);
+        let packData: any;
+        try {
+          packData = JSON.parse(raw);
+        } catch (err: any) {
+          console.error(`❌ Error: File is not valid JSON: ${err.message}`);
+          process.exit(1);
+        }
+
         const result = await engine.importPack(packData);
         console.log(`\n\x1b[32m✔ Successfully imported memory pack!\x1b[0m`);
         console.log(`  Memories imported: \x1b[32m${result.imported_memories}\x1b[0m`);
@@ -758,7 +901,7 @@ export async function runCli(args: string[]) {
         const isDryRun = positionals.includes("--dry-run");
 
         // 1. Hermes Delta Reflection over ingested chat notes
-        const hermesReport = await engine.dreamHermes({ dry_run: isDryRun });
+        const hermesReport = await engine.dreamHermes({ dry_run: isDryRun, use_llm: Boolean(values.llm) });
 
         // 2. Hippocampal Sleep Pass (decay pruning, clustering, orphaned edge cleanup)
         const decayDays = values.until ? parseInt(values.until, 10) : 14;
@@ -952,6 +1095,7 @@ export async function runCli(args: string[]) {
         const report = await engine.dreamHermes({
           session_id: values.session || undefined,
           force: Boolean(values.force),
+          use_llm: Boolean(values.llm),
         });
         console.log("\n\x1b[1m🌙 Hermes Background Delta Dreamer Pass\x1b[0m");
         console.log("─".repeat(60));

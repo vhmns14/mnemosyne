@@ -613,7 +613,7 @@ export class MnemosyneEngine {
   /**
    * Hermes Background Reflection Dreamer (Honcho-style delta pass).
    */
-  async dreamHermes(options?: { session_id?: string; batch_size?: number; force?: boolean; dry_run?: boolean }): Promise<HermesDreamReport> {
+  async dreamHermes(options?: { session_id?: string; batch_size?: number; force?: boolean; dry_run?: boolean; use_llm?: boolean }): Promise<HermesDreamReport> {
     return runHermesDreamerPass(this.db, options);
   }
 

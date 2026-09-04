@@ -139,12 +139,27 @@ try {
       const seconds = uptimeSec % 60;
       const uptimeFormatted = `${hours}h ${minutes}m ${seconds}s`;
 
-      let counts: any = { active_memories: 0, total_memories: 0, active_triples: 0, vector_embeddings: 0 };
+      let counts: any = {
+        active_memories: 0,
+        total_memories: 0,
+        active_triples: 0,
+        vector_embeddings: 0,
+        dream_count: 0,
+        supersession_count: 0,
+        eviction_count: 0,
+        notes_count: 0,
+        patterns_count: 0,
+      };
       try {
         counts.active_memories = (db.query("SELECT COUNT(*) as c FROM memories WHERE is_active = 1").get() as any)?.c || 0;
         counts.total_memories = (db.query("SELECT COUNT(*) as c FROM memories").get() as any)?.c || 0;
         counts.active_triples = (db.query("SELECT COUNT(*) as c FROM entity_triples WHERE is_active = 1").get() as any)?.c || 0;
         counts.vector_embeddings = (db.query("SELECT COUNT(*) as c FROM vector_index").get() as any)?.c || 0;
+        counts.dream_count = (db.query("SELECT COUNT(*) as c FROM dreams").get() as any)?.c || 0;
+        counts.supersession_count = (db.query("SELECT COUNT(*) as c FROM memories WHERE superseded_by_id IS NOT NULL").get() as any)?.c || 0;
+        counts.eviction_count = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'expired'").get() as any)?.c || 0;
+        counts.notes_count = (db.query("SELECT COUNT(*) as c FROM notes").get() as any)?.c || 0;
+        counts.patterns_count = (db.query("SELECT COUNT(*) as c FROM patterns").get() as any)?.c || 0;
       } catch {}
 
       return Response.json(
