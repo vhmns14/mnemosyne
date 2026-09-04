@@ -1746,12 +1746,14 @@ export function getDashboardHtml(): string {
         draggedNode.y = my;
         draggedNode.fx = mx;
         draggedNode.fy = my;
+        wakeSimulation(0.25);
         return;
       }
 
       if (isDragging) {
         pan.x = e.clientX - dragStart.x;
         pan.y = e.clientY - dragStart.y;
+        renderCanvas();
       }
     }
 
@@ -1760,6 +1762,7 @@ export function getDashboardHtml(): string {
         draggedNode.fx = null;
         draggedNode.fy = null;
         draggedNode = null;
+        wakeSimulation(0.2);
       }
       isDragging = false;
     }
@@ -1768,13 +1771,15 @@ export function getDashboardHtml(): string {
       e.preventDefault();
       const f = e.deltaY < 0 ? 1.08 : 0.92;
       zoom = Math.max(0.3, Math.min(2.5, zoom * f));
+      renderCanvas();
     }
 
-    function zoomGraph(f) { zoom = Math.max(0.3, Math.min(2.5, zoom * f)); }
-    function resetGraph() { zoom = 1.0; pan = { x: 0, y: 0 }; }
+    function zoomGraph(f) { zoom = Math.max(0.3, Math.min(2.5, zoom * f)); renderCanvas(); }
+    function resetGraph() { zoom = 1.0; pan = { x: 0, y: 0 }; renderCanvas(); }
 
     function selectNode(n) {
       selectedNode = n;
+      renderCanvas();
       const c = document.getElementById('inspector-content');
       
       const relatedLinks = graphData.links.filter(l => l.source === n.id || l.target === n.id);
@@ -1804,71 +1809,162 @@ export function getDashboardHtml(): string {
 
     function clearSelection() {
       selectedNode = null;
+      renderCanvas();
       document.getElementById('inspector-content').innerHTML = '<div style="color:var(--text-dim); text-align:center; padding: 40px 0;">Click any node in the graph to inspect its relations.</div>';
     }
 
+    let alpha = 1.0;
+
+    function wakeSimulation(boost) {
+      alpha = Math.max(alpha, boost !== undefined ? boost : 0.4);
+      if (!animId) {
+        runPhysicsLoop();
+      }
+    }
+
     function runPhysicsLoop() {
-      updatePhysics();
+      const stillActive = updatePhysics();
       renderCanvas();
-      animId = requestAnimationFrame(runPhysicsLoop);
+      if (stillActive && alpha > 0.002) {
+        animId = requestAnimationFrame(runPhysicsLoop);
+      } else {
+        if (animId) cancelAnimationFrame(animId);
+        animId = null;
+        alpha = 0;
+        renderCanvas();
+      }
     }
 
     function updatePhysics() {
       const nodes = graphData.nodes;
       const links = graphData.links;
-      if (nodes.length === 0) return;
+      if (!nodes || nodes.length === 0) return false;
 
       const canvas = document.getElementById('graph-canvas');
-      if (!canvas) return;
+      if (!canvas) return false;
       const rect = canvas.getBoundingClientRect();
       const width = rect.width > 50 ? rect.width : 800;
       const height = rect.height > 50 ? rect.height : 600;
       const cx = width / 2;
       const cy = height / 2;
 
+      // 1. Center gravity: gently pulls whole graph to center
+      const gravity = 0.0015 * alpha;
       for (const n of nodes) {
         if (n.fx !== null && n.fx !== undefined) continue;
         const dx = cx - n.x;
         const dy = cy - n.y;
-        n.vx = (n.vx || 0) * 0.88 + dx * 0.0015;
-        n.vy = (n.vy || 0) * 0.88 + dy * 0.0015;
+        n.vx = (n.vx || 0) + dx * gravity;
+        n.vy = (n.vy || 0) + dy * gravity;
       }
 
+      // 2. Node repulsion: smooth non-linear repulsion avoiding overlapping
       for (let i = 0; i < nodes.length; i++) {
         for (let j = i + 1; j < nodes.length; j++) {
           const a = nodes[i];
           const b = nodes[j];
           let dx = b.x - a.x;
           let dy = b.y - a.y;
-          let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          if (dist < 160) {
-            const f = (160 - dist) / dist * 0.5;
-            if (!a.fx) { a.vx -= dx * f * 0.02; a.vy -= dy * f * 0.02; }
-            if (!b.fx) { b.vx += dx * f * 0.02; b.vy += dy * f * 0.02; }
+          let dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 1e-4) {
+            dx = (Math.random() - 0.5) * 0.1;
+            dy = (Math.random() - 0.5) * 0.1;
+            dist = Math.sqrt(dx * dx + dy * dy);
+          }
+          if (dist < 140) {
+            const rep = ((140 - dist) / dist) * 0.18 * alpha;
+            const rx = dx * rep;
+            const ry = dy * rep;
+            if (!a.fx) { a.vx -= rx; a.vy -= ry; }
+            if (!b.fx) { b.vx += rx; b.vy += ry; }
           }
         }
       }
 
+      // 3. Hooke's Law Spring Force for connected pairs:
+      // Deduplicate link pairs to prevent 2x/3x force explosions on mutual or duplicate edges
       const nodeIndex = new Map(nodes.map(n => [n.id, n]));
+      const uniqueEdges = new Map();
       for (const l of links) {
-        const u = nodeIndex.get(l.source);
-        const v = nodeIndex.get(l.target);
-        if (u && v) {
-          const dx = v.x - u.x;
-          const dy = v.y - u.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          const f = (dist - 100) * 0.005;
-          if (!u.fx) { u.vx += dx * f; u.vy += dy * f; }
-          if (!v.fx) { v.vx -= dx * f; v.vy -= dy * f; }
+        if (l.source === l.target) continue;
+        const pairKey = l.source < l.target ? (l.source + '::' + l.target) : (l.target + '::' + l.source);
+        if (!uniqueEdges.has(pairKey)) {
+          uniqueEdges.set(pairKey, { source: l.source, target: l.target });
         }
       }
 
-      for (const n of nodes) {
-        if (!n.fx) {
-          n.x += n.vx || 0;
-          n.y += n.vy || 0;
+      const targetDist = 95;
+      const springK = 0.035 * alpha;
+      for (const edge of uniqueEdges.values()) {
+        const u = nodeIndex.get(edge.source);
+        const v = nodeIndex.get(edge.target);
+        if (u && v) {
+          let dx = v.x - u.x;
+          let dy = v.y - u.y;
+          let dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 1e-4) {
+            dx = (Math.random() - 0.5) * 0.1;
+            dy = (Math.random() - 0.5) * 0.1;
+            dist = Math.sqrt(dx * dx + dy * dy);
+          }
+          // Linear spring force using normalized unit vector (Hooke's Law)
+          const displacement = dist - targetDist;
+          const force = displacement * springK;
+          const fx = (dx / dist) * force;
+          const fy = (dy / dist) * force;
+
+          if (!u.fx) { u.vx += fx; u.vy += fy; }
+          if (!v.fx) { v.vx -= fx; v.vy -= fy; }
         }
       }
+
+      // 4. Velocity integration with critical damping and speed limit
+      const maxSpeed = 10 * Math.max(0.15, alpha);
+      let totalKineticEnergy = 0;
+
+      for (const n of nodes) {
+        if (n.fx !== null && n.fx !== undefined) {
+          n.vx = 0;
+          n.vy = 0;
+          continue;
+        }
+
+        // Critical damping prevents endless oscillations
+        n.vx = (n.vx || 0) * 0.80;
+        n.vy = (n.vy || 0) * 0.80;
+
+        const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+        if (speed > maxSpeed) {
+          n.vx = (n.vx / speed) * maxSpeed;
+          n.vy = (n.vy / speed) * maxSpeed;
+        }
+
+        // Zero out micro-vibrations to stop subpixel jittering
+        if (speed < 0.015) {
+          n.vx = 0;
+          n.vy = 0;
+        }
+
+        n.x += n.vx;
+        n.y += n.vy;
+
+        totalKineticEnergy += speed;
+      }
+
+      // Cool simulation down exponentially
+      alpha *= 0.965;
+
+      // Settlement condition: stop loop once stabilized
+      if (alpha < 0.003 || (alpha < 0.08 && totalKineticEnergy < 0.05 * nodes.length)) {
+        alpha = 0;
+        for (const n of nodes) {
+          n.vx = 0;
+          n.vy = 0;
+        }
+        return false;
+      }
+
+      return true;
     }
 
     function renderCanvas() {
@@ -1880,13 +1976,16 @@ export function getDashboardHtml(): string {
       const width = rect.width > 50 ? rect.width : 800;
       const height = rect.height > 50 ? rect.height : 600;
 
-      if (canvas.width !== width * window.devicePixelRatio || canvas.height !== height * window.devicePixelRatio) {
-        canvas.width = width * window.devicePixelRatio;
-        canvas.height = height * window.devicePixelRatio;
+      const dpr = window.devicePixelRatio || 1;
+      const targetW = Math.round(width * dpr);
+      const targetH = Math.round(height * dpr);
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
       }
 
       ctx.save();
-      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      ctx.scale(dpr, dpr);
       ctx.clearRect(0, 0, width, height);
 
       ctx.translate(pan.x, pan.y);
@@ -1912,34 +2011,49 @@ export function getDashboardHtml(): string {
         ctx.beginPath(); ctx.moveTo(minX, y); ctx.lineTo(maxX, y); ctx.stroke();
       }
 
-      // Draw links
+      // Deduplicate link lines and labels for drawing to prevent double-draw jitter
+      const renderedPairs = new Map();
       for (const l of links) {
+        if (l.source === l.target) continue;
         const u = nodeIndex.get(l.source);
         const v = nodeIndex.get(l.target);
-        if (u && v) {
-          const isConnectedToSelected = selectedNode && (l.source === selectedNode.id || l.target === selectedNode.id);
-          ctx.beginPath();
-          ctx.moveTo(u.x, u.y);
-          ctx.lineTo(v.x, v.y);
-          ctx.strokeStyle = isConnectedToSelected ? 'rgba(94, 106, 210, 0.7)' : 'rgba(148, 163, 184, 0.15)';
-          ctx.lineWidth = isConnectedToSelected ? 1.6 : 1;
-          ctx.stroke();
+        if (!u || !v) continue;
+        const pairKey = u.id < v.id ? (u.id + '::' + v.id) : (v.id + '::' + u.id);
+        if (!renderedPairs.has(pairKey)) {
+          renderedPairs.set(pairKey, { u, v, labels: [l.label], isSelected: false });
+        } else {
+          const entry = renderedPairs.get(pairKey);
+          if (!entry.labels.includes(l.label)) entry.labels.push(l.label);
+        }
+        if (selectedNode && (l.source === selectedNode.id || l.target === selectedNode.id)) {
+          renderedPairs.get(pairKey).isSelected = true;
+        }
+      }
 
-          // Link label
-          if (zoom > 0.8) {
-            const mx = (u.x + v.x) / 2;
-            const my = (u.y + v.y) / 2;
-            ctx.font = '9.5px JetBrains Mono';
-            ctx.textAlign = 'center';
-            const tw = ctx.measureText(l.label).width;
-            
-            // Backing pill behind label
-            ctx.fillStyle = isConnectedToSelected ? 'rgba(23, 27, 38, 0.95)' : 'rgba(13, 15, 20, 0.85)';
-            ctx.fillRect(mx - tw/2 - 4, my - 10, tw + 8, 13);
-            
-            ctx.fillStyle = isConnectedToSelected ? '#c7d2fe' : '#64748b';
-            ctx.fillText(l.label, mx, my);
-          }
+      // Draw links
+      for (const { u, v, labels, isSelected } of renderedPairs.values()) {
+        ctx.beginPath();
+        ctx.moveTo(u.x, u.y);
+        ctx.lineTo(v.x, v.y);
+        ctx.strokeStyle = isSelected ? 'rgba(94, 106, 210, 0.75)' : 'rgba(148, 163, 184, 0.18)';
+        ctx.lineWidth = isSelected ? 1.6 : 1;
+        ctx.stroke();
+
+        // Link label
+        if (zoom > 0.8) {
+          const mx = (u.x + v.x) / 2;
+          const my = (u.y + v.y) / 2;
+          const labelText = labels.join(' • ');
+          ctx.font = '9.5px JetBrains Mono';
+          ctx.textAlign = 'center';
+          const tw = ctx.measureText(labelText).width;
+
+          // Backing pill behind label
+          ctx.fillStyle = isSelected ? 'rgba(23, 27, 38, 0.95)' : 'rgba(13, 15, 20, 0.85)';
+          ctx.fillRect(mx - tw / 2 - 4, my - 10, tw + 8, 13);
+
+          ctx.fillStyle = isSelected ? '#c7d2fe' : '#64748b';
+          ctx.fillText(labelText, mx, my);
         }
       }
 
@@ -2039,16 +2153,26 @@ export function getDashboardHtml(): string {
       const cx = width / 2;
       const cy = height / 2;
 
+      // Preserve positions of already placed nodes to prevent jarring repositioning on reload
+      const existingNodeMap = new Map((graphData.nodes || []).map(n => [n.id, n]));
       const nodes = Array.from(nodeMap.values());
       nodes.forEach((n, idx) => {
-        const angle = (idx / (nodes.length || 1)) * 2 * Math.PI;
-        const rad = Math.min(width, height) * 0.28;
-        n.x = cx + rad * Math.cos(angle);
-        n.y = cy + rad * Math.sin(angle);
-        n.vx = 0; n.vy = 0;
+        const existing = existingNodeMap.get(n.id);
+        if (existing && typeof existing.x === 'number' && !isNaN(existing.x)) {
+          n.x = existing.x;
+          n.y = existing.y;
+          n.vx = 0; n.vy = 0;
+        } else {
+          const angle = (idx / (nodes.length || 1)) * 2 * Math.PI;
+          const rad = Math.min(width, height) * 0.28;
+          n.x = cx + rad * Math.cos(angle);
+          n.y = cy + rad * Math.sin(angle);
+          n.vx = 0; n.vy = 0;
+        }
       });
 
       graphData = { nodes, links };
+      wakeSimulation(1.0);
     }
 
     function renderGuardrailsTable(negatives, rules) {
