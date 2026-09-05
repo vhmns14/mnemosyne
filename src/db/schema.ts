@@ -114,7 +114,7 @@ export function initSchema(db: Database): void {
     );
   `);
 
-  // 3. SQLite FTS5 Full-Text Search Table (Lexical Search)
+  // 3. SQLite FTS5 Full-Text Search Table (Lexical Search) & Automatic Sync Triggers
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
       memory_id UNINDEXED,
@@ -123,6 +123,21 @@ export function initSchema(db: Database): void {
       tags,
       tokenize = 'unicode61 remove_diacritics 2'
     );
+
+    CREATE TRIGGER IF NOT EXISTS trg_memories_fts_ai AFTER INSERT ON memories BEGIN
+      INSERT INTO memory_fts (memory_id, content, category, tags)
+      VALUES (new.id, new.content, new.category, coalesce(new.tags, ''));
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_memories_fts_ad AFTER DELETE ON memories BEGIN
+      DELETE FROM memory_fts WHERE memory_id = old.id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_memories_fts_au AFTER UPDATE OF content, category, tags ON memories BEGIN
+      DELETE FROM memory_fts WHERE memory_id = old.id;
+      INSERT INTO memory_fts (memory_id, content, category, tags)
+      VALUES (new.id, new.content, new.category, coalesce(new.tags, ''));
+    END;
   `);
 
   // 4. Entity Triples Graph Table (Mem0 + Zep Temporal Edge style)

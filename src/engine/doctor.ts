@@ -101,10 +101,19 @@ export function repairMemoryHealth(db: Database): DoctorReport {
       repairs.push(`Deactivated ${danglingRes.changes} dangling entity triples from forgotten memories.`);
     }
 
-    // Repair 2: Re-index FTS5 table
+    // Repair 2: Re-index / Synchronize FTS5 table
     try {
-      db.exec(`INSERT INTO memory_fts(memory_fts) VALUES('rebuild');`);
-      repairs.push("Rebuilt SQLite FTS5 lexical index.");
+      const missing = db.query(`
+        SELECT m.id, m.content, m.category, coalesce(m.tags, '') as tags
+        FROM memories m
+        WHERE m.is_active = 1 AND m.id NOT IN (SELECT memory_id FROM memory_fts)
+      `).all() as any[];
+      if (missing.length > 0) {
+        for (const m of missing) {
+          db.prepare("INSERT INTO memory_fts (memory_id, content, category, tags) VALUES (?, ?, ?, ?)").run(m.id, m.content, m.category, m.tags);
+        }
+        repairs.push(`Synchronized ${missing.length} missing memory records into SQLite FTS5 index.`);
+      }
     } catch {
       // ignore
     }

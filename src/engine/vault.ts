@@ -400,14 +400,10 @@ export async function importVault(db: Database, customDir?: string): Promise<Vau
             memId
           );
 
-          // Update vector and FTS5
+          // Update vector
           const vec = await getEmbedding(content);
           db.prepare("INSERT OR REPLACE INTO memory_vectors (memory_id, vector, dimension) VALUES (?, ?, ?)")
             .run(memId, Buffer.from(vec.buffer), vec.length);
-
-          db.prepare("DELETE FROM memory_fts WHERE memory_id = ?").run(memId);
-          db.prepare("INSERT INTO memory_fts (memory_id, content, category, tags) VALUES (?, ?, ?, ?)")
-            .run(memId, content, meta.category || "fact", JSON.stringify(meta.tags || []));
 
           recordMemoryEvent(db, memId, "MUTATED", JSON.stringify({ source: "vault_import", file: path.basename(filePath) }));
           updated++;
@@ -441,13 +437,10 @@ export async function importVault(db: Database, customDir?: string): Promise<Vau
           meta.is_negative_constraint ? 1 : 0
         );
 
-        // Insert vector and FTS5
+        // Insert vector
         const vec = await getEmbedding(content);
         db.prepare("INSERT OR REPLACE INTO memory_vectors (memory_id, vector, dimension) VALUES (?, ?, ?)")
           .run(memId, Buffer.from(vec.buffer), vec.length);
-
-        db.prepare("INSERT INTO memory_fts (memory_id, content, category, tags) VALUES (?, ?, ?, ?)")
-          .run(memId, content, meta.category || "fact", JSON.stringify(meta.tags || []));
 
         recordMemoryEvent(db, memId, "CREATED", JSON.stringify({ source: "vault_import", file: path.basename(filePath) }));
         added++;

@@ -210,15 +210,6 @@ export async function rollupSessionMemories(
     // Vector embedding optional fallback
   }
 
-  // Insert FTS5 record
-  try {
-    db.query(`
-      INSERT INTO memory_fts (memory_id, content, category, tags)
-      VALUES (?, ?, 'reflection', ?)
-    `).run(macroMemoryId, ledgerMarkdown, tags);
-  } catch {
-    // FTS optional fallback
-  }
 
   // 6. Deactivate / Archive source granular memories
   const archivedIds: string[] = [];

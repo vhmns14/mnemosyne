@@ -12,16 +12,16 @@ import { getEmbedding, cosineSimilarity, decodeVector } from "./embedder.ts";
 import { recordMemoryEvent } from "./doctor.ts";
 
 /**
- * Normalized string hash fingerprint for instant zero-LLM deduplication
+ * Normalized string hash fingerprint for instant zero-LLM deduplication.
+ * Preserves token order and distinguishes polarities so permuted sentences 
+ * (e.g. "prefers A over B" vs "prefers B over A") and negations do not collide.
  */
 export function computeFingerprint(text: string): string {
   const normalized = text
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .trim()
-    .split(/\s+/)
-    .sort()
-    .join(" ");
+    .replace(/\s+/g, " ");
   return Bun.hash(normalized).toString(16);
 }
 
@@ -76,7 +76,7 @@ export function extractTriples(text: string): Array<{ subject: string; predicate
   }
 
   // Pattern B: Declarative verbs (EN + ID)
-  const verbRegex = /([A-Za-z0-9_\-\.\s]+?)\s+(prefers?|likes?|dislikes?|loves?|hates?|uses?|requires?|needs?|builds with|deploys via|deploys to|runs on|is constrained by|suka|benci|tidak suka|gemar|memerlukan|menggunakan|memakai|berjalan di|mendeploy ke|menyimpan data di)\s+([A-Za-z0-9_\-\.\s]+)/i;
+  const verbRegex = /([A-Za-z0-9_\-\.\s]+?)\s+(prefers?|likes?|dislikes?|does not like|doesn't like|does not prefer|doesn't prefer|loves?|hates?|uses?|requires?|needs?|builds with|deploys via|deploys to|runs on|is constrained by|suka|benci|tidak suka|gemar|memerlukan|menggunakan|memakai|berjalan di|mendeploy ke|menyimpan data di)\s+([A-Za-z0-9_\-\.\s]+)/i;
   const match = normalized.match(verbRegex);
   if (match) {
     const subject = match[1].trim();
@@ -86,7 +86,8 @@ export function extractTriples(text: string): Array<{ subject: string; predicate
     // Normalize Indonesian & synonym predicates to canonical English predicates
     if (predicate === "PREFER" || predicate === "PREFERS") predicate = "PREFERS";
     else if (predicate === "LIKE" || predicate === "LIKES" || predicate === "SUKA" || predicate === "GEMAR" || predicate === "LOVES" || predicate === "LOVE") predicate = "LIKES";
-    else if (predicate === "DISLIKE" || predicate === "DISLIKES" || predicate === "BENCI" || predicate === "TIDAK_SUKA" || predicate === "HATE" || predicate === "HATES") predicate = "DISLIKES";
+    else if (predicate === "DISLIKE" || predicate === "DISLIKES" || predicate === "BENCI" || predicate === "TIDAK_SUKA" || predicate === "DOES_NOT_LIKE" || predicate === "DOESNT_LIKE" || predicate === "HATE" || predicate === "HATES") predicate = "DISLIKES";
+    else if (predicate === "DOES_NOT_PREFER" || predicate === "DOESNT_PREFER") predicate = "REJECTS";
     else if (predicate === "USE" || predicate === "USES" || predicate === "MENGGUNAKAN" || predicate === "MEMAKAI") predicate = "USES";
     else if (predicate === "BERJALAN_DI") predicate = "RUNS_ON";
     else if (predicate === "MENDEPLOY_KE") predicate = "DEPLOYS_TO";
@@ -157,7 +158,7 @@ export async function rememberMemory(
     options.is_negative_constraint !== undefined
       ? options.is_negative_constraint
       : category === "negative_constraint" ||
-        /\b(jangan|dilarang|never|must not|do not|anti-pattern|tidak boleh)\b/i.test(content);
+        /\b(jangan|dilarang|never|must not|do not|don'?t|does not|doesn'?t|cannot|can'?t|won'?t|should not|shouldn'?t|anti-pattern|tidak boleh|tidak suka|tidak|bukan)\b/i.test(content);
 
   // Auto-detect Outcome / Reflection (LangMem style)
   let outcome = options.outcome || "neutral";
@@ -194,11 +195,11 @@ export async function rememberMemory(
   // Fast-Path Hash Fingerprint Deduplication (0 MB RAM, Instant Zero-LLM Reinforcement)
   if (!options.supersedes_query) {
     const fpMatch = db.query(`
-      SELECT id, access_count, confidence, tags FROM memories 
+      SELECT id, access_count, confidence, tags, is_negative_constraint FROM memories 
       WHERE is_active = 1 AND fingerprint = ? AND (peer = ? OR peer = 'user')
     `).get(fingerprint, peer) as any;
 
-    if (fpMatch) {
+    if (fpMatch && Boolean(fpMatch.is_negative_constraint) === isNegative) {
       let existingTags: string[] = [];
       try {
         existingTags = typeof fpMatch.tags === "string" ? JSON.parse(fpMatch.tags) : (fpMatch.tags || []);
@@ -233,18 +234,22 @@ export async function rememberMemory(
   if (!options.supersedes_query) {
     try {
       const activeRows = db.query(`
-        SELECT m.id, m.content, m.access_count, m.tags, v.vector 
+        SELECT m.id, m.content, m.access_count, m.tags, m.is_negative_constraint, v.vector 
         FROM memories m
         JOIN memory_vectors v ON m.id = v.memory_id
         WHERE m.is_active = 1 
           AND (m.scope = ? OR m.scope = 'global')
           AND m.category = ?
-      `).all(scope, category) as Array<{ id: string; content: string; access_count: number; tags: string; vector: any }>;
+      `).all(scope, category) as Array<{ id: string; content: string; access_count: number; tags: string; is_negative_constraint?: number; vector: any }>;
 
       let highestSim = 0;
       let bestMatch: { id: string; content: string; access_count: number; tags: string } | null = null;
 
       for (const row of activeRows) {
+        if (Boolean(row.is_negative_constraint) !== isNegative) {
+          continue;
+        }
+
         if (row.content.trim().toLowerCase() === content.toLowerCase()) {
           highestSim = 1.0;
           bestMatch = row;
@@ -345,17 +350,7 @@ export async function rememberMemory(
     VALUES (?, ?, ?)
   `).run(id, buffer, vector.length);
 
-  // 4. Index into FTS5 virtual table
-  try {
-    db.prepare(`
-      INSERT INTO memory_fts (memory_id, content, category, tags)
-      VALUES (?, ?, ?, ?)
-    `).run(id, content, category, tags.join(" "));
-  } catch {
-    // ignore
-  }
-
-  // 5. Ingest Triples & Automatic Conflict Resolution for Triples
+  // 6. Ingest Triples & Automatic Conflict Resolution for Triples
   const extracted = options.entities || extractTriples(content);
   for (const t of extracted) {
     const subject = t.subject.trim();
