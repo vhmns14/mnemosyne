@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { CONFIG } from "../config.ts";
-import { cosineSimilarity, decodeVector, getEmbedding } from "./embedder.ts";
+import { cosineSimilarity, decodeVector, getEmbedding, STOPWORDS } from "./embedder.ts";
 import { sweepExpiredFacts } from "./dialectic.ts";
 import type { MemoryRecord, RecallOptions, ScoredMemory } from "../types.ts";
 
@@ -77,9 +77,14 @@ export async function searchHybrid(
     .filter((w) => w.length > 1)
     .slice(0, 16);
 
+  // Filter out non-informative stopwords so common words don't trigger false positives
+  const contentWords = rawWords.filter((w) => !STOPWORDS.has(w.toLowerCase()) && w.length > 2);
+  const searchWords = contentWords.length > 0 ? contentWords : rawWords;
+
   const ftsScores = new Map<string, number>();
-  if (rawWords.length > 0) {
-    const ftsQuery = rawWords.map((w) => `"${w}"*`).join(" OR ");
+  if (searchWords.length > 0) {
+    const ftsQuery = searchWords.map((w) => `"${w}"*`).join(" OR ");
+
     try {
       const ftsRows = db
         .query(

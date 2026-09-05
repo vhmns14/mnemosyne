@@ -27,6 +27,10 @@ import { anchorMemory, checkMemoryStaleness, scanWorkspaceStaleness } from "./st
 import { runDreamerPass, runHermesDreamerPass } from "./dreamer.ts";
 import { BlackboardManager } from "./blackboard.ts";
 import { L1HotCache } from "./cache.ts";
+import { exportVault, importVault, syncVault } from "./vault.ts";
+import { runLongMemEval } from "./benchmark.ts";
+import { detectAndSummarizeCommunities, getCommunitySummaries } from "./community.ts";
+import { getContextBlock, setContextBlock, appendContextBlock, listContextBlocks, deleteContextBlock } from "./blocks.ts";
 import { randomUUID } from "node:crypto";
 import type { 
   RecallOptions, RememberOptions, ScoredMemory, MemoryRecord, PersonaProfile, 
@@ -38,8 +42,11 @@ import type {
   DreamReport, DreamOptions, CacheStats,
   GitHookResult, DreamerTimerResult, SessionPrimer,
   FactInput, UpsertFactResult, StandingCard, DeleteBySourceOptions, DeleteBySourceResult,
-  IngestOptions, IngestResult, HermesStats, HermesDreamReport, UnifiedDreamReport
+  IngestOptions, IngestResult, HermesStats, HermesDreamReport, UnifiedDreamReport,
+  VaultExportResult, VaultImportResult, VaultSyncResult,
+  LongMemEvalReport, LongMemEvalCase, CommunitySummaryRecord, ContextBlockRecord
 } from "../types.ts";
+
 
 export class MnemosyneEngine {
   private _blackboard: BlackboardManager;
@@ -749,6 +756,63 @@ export class MnemosyneEngine {
   evictLowScore(maxCapacity?: number): number {
     return evictLowScoreFacts(this.db, maxCapacity);
   }
+
+  // ==========================================
+  // Fase 10: Markdown Vault Mirror Methods
+  // ==========================================
+  exportVault(customDir?: string): VaultExportResult {
+    return exportVault(this.db, customDir);
+  }
+
+  async importVault(customDir?: string): Promise<VaultImportResult> {
+    return importVault(this.db, customDir);
+  }
+
+  async syncVault(customDir?: string): Promise<VaultSyncResult> {
+    return syncVault(this.db, customDir);
+  }
+
+  // ==========================================
+  // Fase 11: LongMemEval Benchmark Runner
+  // ==========================================
+  async runBenchmark(cases?: LongMemEvalCase[]): Promise<LongMemEvalReport> {
+    return runLongMemEval(this, cases);
+  }
+
+  // ==========================================
+  // Fase 12: Community Summaries Methods
+  // ==========================================
+  detectCommunities(): CommunitySummaryRecord[] {
+    return detectAndSummarizeCommunities(this.db);
+  }
+
+  getCommunities(limit?: number): CommunitySummaryRecord[] {
+    return getCommunitySummaries(this.db, limit);
+  }
+
+  // ==========================================
+  // Fase 13: Dynamic Working Memory Blocks
+  // ==========================================
+  getBlock(name: string): ContextBlockRecord | null {
+    return getContextBlock(this.db, name);
+  }
+
+  setBlock(name: string, content: string, limit?: number): ContextBlockRecord {
+    return setContextBlock(this.db, name, content, limit);
+  }
+
+  appendBlock(name: string, text: string): ContextBlockRecord {
+    return appendContextBlock(this.db, name, text);
+  }
+
+  listBlocks(): ContextBlockRecord[] {
+    return listContextBlocks(this.db);
+  }
+
+  deleteBlock(name: string): boolean {
+    return deleteContextBlock(this.db, name);
+  }
 }
+
 
 

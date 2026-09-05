@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { getDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
 import { isTransactionalNoise } from "./engine/dialectic.ts";
+import { formatBenchmarkReport } from "./engine/benchmark.ts";
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
 
 const db = getDatabase();
@@ -52,6 +53,10 @@ COMMANDS:
   ingest <content>      Ingest message or fact with fast-path fingerprint dedup
   dream [--dry-run]     Run autonomous delta reflection & sleep consolidation
   stats                 Print Hermes memory stats (counts, top entities, patterns)
+  vault [export|sync]   Sync memories to Obsidian/Markdown vault (.mnemo/vault)
+  benchmark [longmem]   Run LongMemEval standardized benchmark suite (ICLR 2025/2026)
+  community / comms     List hierarchical community summaries (Graphiti style)
+  block [list|get|set]  Dynamic working memory blocks (Letta style self-editing)
   preflight <cmd>       Evaluate shell command against RAM & negative constraints
   upsert <s> <p> <o>    Upsert semantic triple with automatic conflict resolution
   delete-source <sess>  Purge all memories and triples originating from a session
@@ -1144,10 +1149,127 @@ Evaluate shell command against system guardrails (16GB RAM limit, no background,
         break;
       }
 
+      case "vault": {
+        const sub = positionals[0] || "sync";
+        const customDir = positionals[1] || values.dir;
+
+        if (sub === "export") {
+          const res = engine.exportVault(customDir);
+          console.log(`\n\x1b[32m✔ Markdown Vault exported successfully!\x1b[0m`);
+          console.log(`  Vault Directory: \x1b[36m${res.vault_dir}\x1b[0m`);
+          console.log(`  Total Exported:  \x1b[33m${res.total_exported}\x1b[0m files`);
+          for (const [cat, cnt] of Object.entries(res.by_category)) {
+            console.log(`    - ${cat}: ${cnt}`);
+          }
+          console.log("");
+        } else if (sub === "import") {
+          const res = await engine.importVault(customDir);
+          console.log(`\n\x1b[32m✔ Markdown Vault imported successfully!\x1b[0m`);
+          console.log(`  Vault Directory: \x1b[36m${res.vault_dir}\x1b[0m`);
+          console.log(`  Scanned: ${res.total_scanned}, Added: \x1b[32m${res.added}\x1b[0m, Updated: \x1b[33m${res.updated}\x1b[0m, Skipped: ${res.skipped}\n`);
+        } else if (sub === "sync") {
+          const res = await engine.syncVault(customDir);
+          console.log(`\n\x1b[32m✔ Markdown Vault synchronized successfully!\x1b[0m`);
+          console.log(`  Vault Directory: \x1b[36m${res.vault_dir}\x1b[0m`);
+          console.log(`  Exported to Vault: \x1b[32m${res.exported}\x1b[0m`);
+          console.log(`  Imported to DB:    \x1b[33m${res.imported}\x1b[0m\n`);
+        } else {
+          console.error(`Unknown vault subcommand: ${sub}. Use 'mnemo vault [export|import|sync]'`);
+        }
+        break;
+      }
+
+      case "benchmark":
+      case "bench": {
+        console.log("\n🚀 Running LongMemEval Standardized Benchmark Suite (ICLR 2025/2026 Protocol)...");
+        const rep = await engine.runBenchmark();
+        console.log("\n" + formatBenchmarkReport(rep) + "\n");
+        break;
+      }
+
+      case "community":
+      case "communities":
+      case "comms": {
+        const sub = positionals[0];
+        if (sub === "detect" || sub === "refresh") {
+          const comms = engine.detectCommunities();
+          console.log(`\n\x1b[32m✔ Detected & refreshed ${comms.length} knowledge communities!\x1b[0m\n`);
+        }
+        const list = engine.getCommunities(20);
+        console.log(`\n\x1b[1m🌐 Hierarchical Community Summaries (${list.length} communities)\x1b[0m`);
+        console.log("─".repeat(70));
+        if (list.length === 0) {
+          console.log("  No community summaries available yet. Run 'mnemo community detect' or 'mnemo dream'.");
+        } else {
+          for (const c of list) {
+            console.log(`  \x1b[36m[${c.community_id}]\x1b[0m \x1b[1m${c.label}\x1b[0m (${c.member_memory_ids.length} memories)`);
+            console.log(`  \x1b[90mEntities: ${c.key_entities.join(", ")}\x1b[0m`);
+            console.log(`  ${c.summary}\n`);
+          }
+        }
+        console.log("─".repeat(70) + "\n");
+        break;
+      }
+
+      case "block":
+      case "blocks": {
+        const sub = positionals[0] || "list";
+        const blockName = positionals[1];
+        const blockContent = positionals.slice(2).join(" ").trim();
+
+        if (sub === "list") {
+          const blocks = engine.listBlocks();
+          console.log(`\n\x1b[1m🧱 Dynamic Working Memory Blocks (Letta / MemGPT style)\x1b[0m`);
+          console.log("─".repeat(70));
+          for (const b of blocks) {
+            console.log(`  \x1b[36m${b.name}\x1b[0m (Limit: ${b.token_limit} tokens, Updated: ${new Date(b.updated_at).toLocaleTimeString()})`);
+            console.log(`  ${b.content.slice(0, 100)}${b.content.length > 100 ? "..." : ""}\n`);
+          }
+          console.log("─".repeat(70) + "\n");
+        } else if (sub === "get") {
+          if (!blockName) {
+            console.error("Error: Please provide block name. E.g. 'mnemo block get active_task'");
+            break;
+          }
+          const block = engine.getBlock(blockName);
+          if (!block) {
+            console.log(`\x1b[33mBlock '${blockName}' not found.\x1b[0m`);
+          } else {
+            console.log(`\n\x1b[1m=== Block: ${block.name} (Limit: ${block.token_limit} tokens) ===\x1b[0m\n`);
+            console.log(block.content + "\n");
+          }
+        } else if (sub === "set") {
+          if (!blockName || !blockContent) {
+            console.error("Error: Please provide block name and content. E.g. 'mnemo block set active_task Testing API'");
+            break;
+          }
+          const limit = values.tokens ? parseInt(values.tokens, 10) : undefined;
+          const updated = engine.setBlock(blockName, blockContent, limit);
+          console.log(`\x1b[32m✔ Block '${updated.name}' updated successfully!\x1b[0m`);
+        } else if (sub === "append") {
+          if (!blockName || !blockContent) {
+            console.error("Error: Please provide block name and text to append.");
+            break;
+          }
+          const updated = engine.appendBlock(blockName, blockContent);
+          console.log(`\x1b[32m✔ Appended to block '${updated.name}' successfully!\x1b[0m`);
+        } else if (sub === "delete" || sub === "rm") {
+          if (!blockName) {
+            console.error("Error: Please provide block name to delete.");
+            break;
+          }
+          const deleted = engine.deleteBlock(blockName);
+          if (deleted) console.log(`\x1b[32m✔ Block '${blockName}' deleted successfully!\x1b[0m`);
+          else console.log(`\x1b[33mBlock '${blockName}' not found.\x1b[0m`);
+        }
+        break;
+      }
+
       default:
         console.error(`Unknown command: ${command}. Run 'mnemo help' for usage.`);
         process.exit(1);
     }
+
   } catch (err: any) {
     console.error(`\x1b[31mError:\x1b[0m`, err.message);
     process.exit(1);

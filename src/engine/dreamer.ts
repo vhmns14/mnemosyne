@@ -5,6 +5,7 @@ import type { DreamReport, DreamOptions, HermesDreamReport, HermesDreamContract 
 import { CONFIG } from "../config.ts";
 import { clusterMemories } from "./cluster.ts";
 import { extractTriples, upsertFact } from "./dialectic.ts";
+import { detectAndSummarizeCommunities } from "./community.ts";
 
 /**
  * Autonomous Hippocampal Sleep & Dreamer Consolidation Pass
@@ -49,9 +50,16 @@ export async function runDreamerPass(
         }
       }
     }
+    if (!dryRun) {
+      const comms = detectAndSummarizeCommunities(db);
+      if (comms.length > 0) {
+        details.push(`Updated ${comms.length} hierarchical community summaries`);
+      }
+    }
   } catch (err: any) {
     details.push(`Phase 1 Synthesis warning: ${err.message}`);
   }
+
 
   // ==========================================
   // Phase 2: Ebbinghaus Decay & Pruning

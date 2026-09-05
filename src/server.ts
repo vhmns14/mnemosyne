@@ -861,10 +861,95 @@ try {
       return Response.json({ success: true, result }, { headers: corsHeaders });
     }
 
-      return Response.json(
-        { error: "Not found", path: url.pathname },
-        { status: 404, headers: corsHeaders }
-      );
+    // Fase 10: Markdown Vault Export & Sync
+    if (method === "POST" && url.pathname === "/v1/vault/export") {
+      try {
+        const body = (await req.json().catch(() => ({}))) as any;
+        const result = engine.exportVault(body.target_dir);
+        return Response.json({ success: true, ...result }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (method === "POST" && url.pathname === "/v1/vault/sync") {
+      try {
+        const body = (await req.json().catch(() => ({}))) as any;
+        const result = await engine.syncVault(body.target_dir);
+        return Response.json({ success: true, ...result }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // Fase 11: LongMemEval Benchmark
+    if (method === "GET" && url.pathname === "/v1/benchmark/longmemeval") {
+      try {
+        const report = await engine.runBenchmark();
+        return Response.json({ success: true, report }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // Fase 12: Hierarchical Community Summaries
+    if (method === "GET" && url.pathname === "/v1/communities") {
+      const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!, 10) : 20;
+      const communities = engine.getCommunities(limit);
+      return Response.json({ success: true, count: communities.length, communities }, { headers: corsHeaders });
+    }
+
+    // Fase 13: Dynamic Context Blocks
+    if (method === "GET" && url.pathname === "/v1/blocks") {
+      const blocks = engine.listBlocks();
+      return Response.json({ success: true, count: blocks.length, blocks }, { headers: corsHeaders });
+    }
+
+    if (method === "GET" && url.pathname.startsWith("/v1/blocks/")) {
+      const name = url.pathname.slice("/v1/blocks/".length);
+      const block = engine.getBlock(name);
+      if (!block) {
+        return Response.json({ success: false, error: "Block not found" }, { status: 404, headers: corsHeaders });
+      }
+      return Response.json({ success: true, block }, { headers: corsHeaders });
+    }
+
+    if (method === "POST" && url.pathname.startsWith("/v1/blocks/")) {
+      try {
+        const subpath = url.pathname.slice("/v1/blocks/".length);
+        const isAppend = subpath.endsWith("/append");
+        const name = isAppend ? subpath.slice(0, -"/append".length) : subpath;
+        const body = (await req.json()) as any;
+
+        if (isAppend) {
+          if (!body.text) {
+            return Response.json({ success: false, error: "Missing 'text'" }, { status: 400, headers: corsHeaders });
+          }
+          const block = engine.appendBlock(name, body.text);
+          return Response.json({ success: true, block }, { headers: corsHeaders });
+        } else {
+          if (!body.content) {
+            return Response.json({ success: false, error: "Missing 'content'" }, { status: 400, headers: corsHeaders });
+          }
+          const block = engine.setBlock(name, body.content, body.token_limit);
+          return Response.json({ success: true, block }, { headers: corsHeaders });
+        }
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (method === "DELETE" && url.pathname.startsWith("/v1/blocks/")) {
+      const name = url.pathname.slice("/v1/blocks/".length);
+      const deleted = engine.deleteBlock(name);
+      return Response.json({ success: deleted }, { headers: corsHeaders });
+    }
+
+    return Response.json(
+      { error: "Not found", path: url.pathname },
+      { status: 404, headers: corsHeaders }
+    );
+
     },
   });
 

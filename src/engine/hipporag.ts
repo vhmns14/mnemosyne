@@ -1,11 +1,31 @@
 import type { Database } from "bun:sqlite";
-import type { ScoredMemory } from "../types.ts";
+import { STOPWORDS } from "./embedder.ts";
+import type { ScoredMemory, EntityTriple } from "../types.ts";
+
+const GENERIC_ENTITIES = new Set([
+  "thing", "something", "data", "code", "file", "app", "application",
+  "system", "user", "agent", "item", "value", "ini", "itu", "hal", "barang"
+]);
 
 /**
- * Stanford HippoRAG-inspired Personalized PageRank (PPR) Engine
- * Mimics hippocampal indexing over neocortical associative graph:
- * Instead of shallow 1-hop search, computes random walk with restart (PPR)
- * to uncover non-obvious multi-hop associations in <1ms.
+ * Recognition Memory Gating (HippoRAG 2):
+ * Filters out high-entropy / generic / stopword entities to prevent hub leakage
+ * before constructing the bipartite transition matrix.
+ */
+export function isInformativeEntity(entity: string): boolean {
+  if (!entity) return false;
+  const clean = entity.trim().toLowerCase();
+  if (clean.length <= 2) return false;
+  if (STOPWORDS.has(clean) || GENERIC_ENTITIES.has(clean)) return false;
+  return true;
+}
+
+/**
+ * Stanford HippoRAG 2: Heterogeneous Bipartite Graph Personalized PageRank (PPR)
+ * Synthesizes neurobiologically inspired hippocampal indexing over neocortical graphs:
+ * - Co-existence of Passage Nodes (Memories) and Entity/Phrase Nodes in a single graph
+ * - Recognition Memory gating: filters uninformative entities to avoid spurious shortcut hubs
+ * - Teleport vector p0 diffuses energy across: Passage <-> Entity <-> Passage in < 2ms.
  */
 export function computeHippoPageRank(
   db: Database,
@@ -16,11 +36,11 @@ export function computeHippoPageRank(
 ): ScoredMemory[] {
   if (seedMemories.length === 0) return [];
 
-  // 1. Build Local Ego-Graph around seed memories (max 100 nodes, 2-hop bounded)
+  // 1. Build Local Ego-Graph around seed memories (max 100 candidate memories)
   const seedIds = seedMemories.map((s) => s.id);
   const candidateIdSet = new Set<string>(seedIds);
 
-  // A. Find 1-hop associative neighbors
+  // A. 1-hop associative neighbors from associative_links
   if (seedIds.length > 0) {
     const seedPlaceholders = seedIds.map(() => "?").join(",");
     const directLinks = db
@@ -36,18 +56,18 @@ export function computeHippoPageRank(
       if (dl.neighbor_id) candidateIdSet.add(dl.neighbor_id);
     }
 
-    // B. Find entity-connected neighbors (1-hop via shared subjects/objects)
+    // B. Entity-connected neighbors from entity_triples
     const seedTriples = db
       .query(
         `SELECT DISTINCT subject, object FROM entity_triples 
-         WHERE is_active = 1 AND memory_id IN (${seedPlaceholders}) LIMIT 30`
+         WHERE is_active = 1 AND memory_id IN (${seedPlaceholders}) LIMIT 40`
       )
       .all(...seedIds) as any[];
 
     const seedEntities: string[] = [];
     for (const st of seedTriples) {
-      if (st.subject) seedEntities.push(st.subject);
-      if (st.object) seedEntities.push(st.object);
+      if (isInformativeEntity(st.subject)) seedEntities.push(st.subject);
+      if (isInformativeEntity(st.object)) seedEntities.push(st.object);
     }
 
     if (seedEntities.length > 0) {
@@ -70,25 +90,68 @@ export function computeHippoPageRank(
   if (candidateIds.length === 0) return seedMemories;
 
   const candidatePlaceholders = candidateIds.map(() => "?").join(",");
-  const allActive = db
+  const allActiveMemories = db
     .query(`SELECT * FROM memories WHERE is_active = 1 AND id IN (${candidatePlaceholders})`)
     .all(...candidateIds) as any[];
 
-  if (allActive.length === 0) return seedMemories;
+  if (allActiveMemories.length === 0) return seedMemories;
 
-  const nodeIndex = new Map<string, number>();
-  const idToRow = new Map<string, any>();
-  for (let i = 0; i < allActive.length; i++) {
-    nodeIndex.set(allActive[i].id, i);
-    idToRow.set(allActive[i].id, allActive[i]);
+  // 2. Index Passage Nodes (0 to N_P - 1)
+  const memoryNodeIndex = new Map<string, number>();
+  const idToMemoryRow = new Map<string, any>();
+  for (let i = 0; i < allActiveMemories.length; i++) {
+    memoryNodeIndex.set(allActiveMemories[i].id, i);
+    idToMemoryRow.set(allActiveMemories[i].id, allActiveMemories[i]);
+  }
+  const NP = allActiveMemories.length;
+
+  // 3. Fetch Triples & Index Entity Nodes (NP to NP + NE - 1)
+  const candidateTriples = db
+    .query(
+      `SELECT id, memory_id, subject, predicate, object, confidence 
+       FROM entity_triples 
+       WHERE is_active = 1 AND memory_id IN (${candidatePlaceholders})`
+    )
+    .all(...candidateIds) as any[];
+
+  const entityNodeIndex = new Map<string, number>();
+  let nextEntityIdx = NP;
+
+  const memToTriples = new Map<string, EntityTriple[]>();
+
+  for (const t of candidateTriples) {
+    if (!memToTriples.has(t.memory_id)) memToTriples.set(t.memory_id, []);
+    memToTriples.get(t.memory_id)!.push({
+      id: t.id,
+      subject: t.subject,
+      predicate: t.predicate,
+      object: t.object,
+      memory_id: t.memory_id,
+      confidence: t.confidence || 1.0,
+      is_active: true,
+      valid_from: 0,
+      valid_until: null,
+      created_at: 0,
+    });
+
+    const s = t.subject.toLowerCase();
+    const o = t.object.toLowerCase();
+
+    if (isInformativeEntity(s) && !entityNodeIndex.has(s)) {
+      entityNodeIndex.set(s, nextEntityIdx++);
+    }
+    if (isInformativeEntity(o) && !entityNodeIndex.has(o)) {
+      entityNodeIndex.set(o, nextEntityIdx++);
+    }
   }
 
-  const N = allActive.length;
+  const NE = entityNodeIndex.size;
+  const N = NP + NE; // Total nodes in Heterogeneous Bipartite Graph
 
-  // 2. Build Adjacency Matrix from Associative Links & Entity Triples
+  // 4. Build Adjacency Matrix (Outgoing edges)
   const outgoing: Array<Array<{ target: number; weight: number }>> = Array.from({ length: N }, () => []);
 
-  // A. Add associative links for subgraph nodes
+  // A. Associative Links: Passage <-> Passage
   const links = db
     .query(
       `SELECT source_id, target_id, resonance_weight FROM associative_links 
@@ -97,57 +160,43 @@ export function computeHippoPageRank(
     .all(...candidateIds, ...candidateIds) as any[];
 
   for (const l of links) {
-    const u = nodeIndex.get(l.source_id);
-    const v = nodeIndex.get(l.target_id);
+    const u = memoryNodeIndex.get(l.source_id);
+    const v = memoryNodeIndex.get(l.target_id);
     if (u !== undefined && v !== undefined && u !== v) {
-      outgoing[u].push({ target: v, weight: l.resonance_weight || 0.5 });
-      outgoing[v].push({ target: u, weight: l.resonance_weight || 0.5 });
+      const w = l.resonance_weight || 0.5;
+      outgoing[u].push({ target: v, weight: w });
+      outgoing[v].push({ target: u, weight: w });
     }
   }
 
-  // B. Add Shared Entity Links from entity_triples (capped degree to avoid clique explosion)
-  const triples = db
-    .query(
-      `SELECT memory_id, subject, object FROM entity_triples 
-       WHERE is_active = 1 AND memory_id IN (${candidatePlaceholders})`
-    )
-    .all(...candidateIds) as any[];
+  // B. Bipartite Edges: Passage <-> Entity
+  for (const t of candidateTriples) {
+    const u = memoryNodeIndex.get(t.memory_id);
+    if (u === undefined) continue;
 
-  const entityToMems = new Map<string, number[]>();
-  for (const t of triples) {
-    const u = nodeIndex.get(t.memory_id);
-    if (u !== undefined) {
-      const sKey = `S:${t.subject.toLowerCase()}`;
-      const oKey = `O:${t.object.toLowerCase()}`;
-      if (!entityToMems.has(sKey)) entityToMems.set(sKey, []);
-      if (!entityToMems.has(oKey)) entityToMems.set(oKey, []);
-      entityToMems.get(sKey)!.push(u);
-      entityToMems.get(oKey)!.push(u);
+    const s = t.subject.toLowerCase();
+    const o = t.object.toLowerCase();
+    const conf = t.confidence || 1.0;
+
+    const sNode = entityNodeIndex.get(s);
+    if (sNode !== undefined) {
+      outgoing[u].push({ target: sNode, weight: 0.75 * conf });
+      outgoing[sNode].push({ target: u, weight: 0.75 * conf });
+    }
+
+    const oNode = entityNodeIndex.get(o);
+    if (oNode !== undefined) {
+      outgoing[u].push({ target: oNode, weight: 0.75 * conf });
+      outgoing[oNode].push({ target: u, weight: 0.75 * conf });
     }
   }
 
-  // Connect memories sharing the same entity (degree capped to max 8 nodes per entity)
-  for (const memList of entityToMems.values()) {
-    const boundedList = memList.slice(0, 8);
-    if (boundedList.length > 1) {
-      for (let i = 0; i < boundedList.length; i++) {
-        for (let j = i + 1; j < boundedList.length; j++) {
-          const u = boundedList[i];
-          const v = boundedList[j];
-          if (u !== v) {
-            outgoing[u].push({ target: v, weight: 0.6 });
-            outgoing[v].push({ target: u, weight: 0.6 });
-          }
-        }
-      }
-    }
-  }
-
-  // 3. Initialize Personalized PageRank Vector (Teleport vector p0)
+  // 5. Initialize Personalized PageRank Vector (Teleport Vector p0)
   const p0 = new Float32Array(N);
   let seedSum = 0;
+
   for (const s of seedMemories) {
-    const idx = nodeIndex.get(s.id);
+    const idx = memoryNodeIndex.get(s.id);
     if (idx !== undefined) {
       p0[idx] = Math.max(0.1, s.score);
       seedSum += p0[idx];
@@ -159,7 +208,7 @@ export function computeHippoPageRank(
     p0[i] /= seedSum;
   }
 
-  // 4. Power Iteration: p_next = (1 - d) * p0 + d * M * p_curr
+  // 6. Power Iteration: p_next = (1 - d) * p0 + d * M * p_curr
   let pCurr = new Float32Array(p0);
   let pNext = new Float32Array(N);
 
@@ -180,7 +229,7 @@ export function computeHippoPageRank(
           pNext[v] += pushVal * edges[e].weight;
         }
       } else {
-        // Dangling node: redistribute to teleport vector
+        // Dangling node: distribute to teleport vector
         const pushVal = damping * pCurr[u];
         for (let i = 0; i < N; i++) {
           pNext[i] += pushVal * p0[i];
@@ -194,22 +243,24 @@ export function computeHippoPageRank(
     pNext = tmp;
   }
 
-  // 5. Merge PageRank scores into seed memories & activate central graph nodes
+  // 7. Extract Centralities & Boost Passage Scores
   const seedMap = new Map<string, ScoredMemory>();
   for (const s of seedMemories) {
     seedMap.set(s.id, s);
   }
 
-  for (let i = 0; i < N; i++) {
+  for (let i = 0; i < NP; i++) {
     const prScore = pCurr[i];
-    const row = allActive[i];
+    const row = allActiveMemories[i];
+    const attachedTriples = memToTriples.get(row.id) || [];
 
     if (seedMap.has(row.id)) {
       const mem = seedMap.get(row.id)!;
       mem.pagerank_score = prScore;
-      mem.score = Math.min(1.0, Math.max(0.0, mem.score + prScore * 0.25)); // Boost score via PageRank graph centrality
-    } else if (prScore > 0.08) {
-      // High PageRank node pulled from graph!
+      mem.connected_entities = attachedTriples;
+      mem.score = Math.min(1.0, Math.max(0.0, mem.score + prScore * 0.25));
+    } else if (prScore > 0.05) {
+      // High-centrality passage pulled via multi-hop entity walking
       let tags: string[] = [];
       try {
         tags = JSON.parse(row.tags || "[]");
@@ -242,6 +293,7 @@ export function computeHippoPageRank(
         recency_score: 0,
         resonance_boost: prScore,
         pagerank_score: prScore,
+        connected_entities: attachedTriples,
       });
     }
   }

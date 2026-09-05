@@ -400,8 +400,91 @@ const TOOLS = [
         peer: { type: "string", description: "Peer name to purge." }
       }
     }
+  },
+  {
+    name: "export_vault",
+    description: "Export active memories to Markdown vault (.mnemo/vault) with YAML frontmatter for Obsidian/VSCode.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_dir: { type: "string", description: "Optional custom vault directory path." }
+      }
+    }
+  },
+  {
+    name: "sync_vault",
+    description: "Bi-directional synchronization between SQLite database and local Markdown vault directory.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_dir: { type: "string", description: "Optional custom vault directory path." }
+      }
+    }
+  },
+  {
+    name: "run_benchmark",
+    description: "Run the LongMemEval standardized benchmark suite (ICLR 2025/2026 Protocol) evaluating extraction, multi-session, updates, temporal, and abstention.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "get_community_summaries",
+    description: "Retrieve high-level hierarchical community summaries (Graphiti / GraphRAG style) of long-term knowledge.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Maximum number of community summaries to return (default 20)." }
+      }
+    }
+  },
+  {
+    name: "get_context_block",
+    description: "Retrieve a dynamic working memory block by name (e.g. active_task, scratchpad, user_profile).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Block name." }
+      },
+      required: ["name"]
+    }
+  },
+  {
+    name: "update_context_block",
+    description: "Update the content of a dynamic working memory block with token budget enforcement.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Block name." },
+        content: { type: "string", description: "Full content to store in block." },
+        token_limit: { type: "number", description: "Optional token limit (default 500)." }
+      },
+      required: ["name", "content"]
+    }
+  },
+  {
+    name: "append_context_block",
+    description: "Append text lines to a dynamic working memory block.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Block name." },
+        text: { type: "string", description: "Text to append to block." }
+      },
+      required: ["name", "text"]
+    }
+  },
+  {
+    name: "list_context_blocks",
+    description: "List all dynamic working memory blocks (Letta/MemGPT style) and their token budgets.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
   }
 ];
+
 
 function sendJson(msg: any) {
   process.stdout.write(JSON.stringify(msg) + "\n");
@@ -843,6 +926,87 @@ async function handleMessage(line: string) {
         });
         return;
       }
+
+      if (name === "export_vault") {
+        const res = engine.exportVault(args.target_dir);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "sync_vault") {
+        const res = await engine.syncVault(args.target_dir);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "run_benchmark") {
+        const res = await engine.runBenchmark();
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "get_community_summaries") {
+        const res = engine.getCommunities(args.limit);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "get_context_block") {
+        const res = engine.getBlock(args.name);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "update_context_block") {
+        const res = engine.setBlock(args.name, args.content, args.token_limit);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "append_context_block") {
+        const res = engine.appendBlock(args.name, args.text);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "list_context_blocks") {
+        const res = engine.listBlocks();
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
 
       sendJson({
         jsonrpc: "2.0",

@@ -387,4 +387,31 @@ export function initSchema(db: Database): void {
       fingerprint
     FROM memories;
   `);
+
+  // 20. Hierarchical Community Summaries (Graphiti / GraphRAG style)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS community_summaries (
+      id TEXT PRIMARY KEY,
+      community_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      key_entities TEXT NOT NULL DEFAULT '[]',
+      member_memory_ids TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_community_id ON community_summaries(community_id);
+  `);
+
+  // 21. Dynamic Working Memory Blocks (Letta / MemGPT style)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS context_blocks (
+      name TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      token_limit INTEGER NOT NULL DEFAULT 500,
+      updated_at INTEGER NOT NULL
+    );
+  `);
 }
+

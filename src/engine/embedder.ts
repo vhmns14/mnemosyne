@@ -3,17 +3,19 @@ import { CONFIG } from "../config.ts";
 export const EMBEDDING_DIM = 384;
 
 // Multilingual Stopwords (EN + ID) to reduce semantic noise
-const STOPWORDS = new Set([
+export const STOPWORDS = new Set([
   // English
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
   "by", "from", "into", "through", "during", "is", "are", "was", "were", "be", "been",
   "being", "have", "has", "had", "do", "does", "did", "will", "would", "should", "could",
-  "this", "that", "these", "those",
+  "this", "that", "these", "those", "what", "where", "when", "how", "who", "why", "which",
   // Indonesian
   "yang", "dan", "atau", "tetapi", "di", "ke", "dari", "pada", "untuk", "dengan",
   "oleh", "tentang", "ini", "itu", "adalah", "ialah", "sebagai", "ada", "telah",
   "sudah", "akan", "bisa", "dapat", "pun", "juga", "jika", "kalau", "agar", "supaya",
+  "apa", "siapa", "kapan", "dimana", "mengapa", "bagaimana",
 ]);
+
 
 /**
  * FNV-1a Hash with variable seed

@@ -3,7 +3,7 @@
 > *Cross-Platform: Universal MCP Server · Standalone CLI (`mnemo`) · Local REST Daemon · Hermes Agent Pipe*  
 > *Synthesizing the state-of-the-art: **Honcho** (Theory of Mind), **Holographic Memory** (Associative Resonance), **Mem0** (Graph Triples), **Zep/Graphiti** (Bi-Temporal Validity), **Supermemory** (Negative Constraints), **LangMem** (Failure Retrospectives), and **Cognee** (Entity Canonicalization).*
 
-[![Test Suite](https://img.shields.io/badge/Tests-50%20Passed-emerald.svg)](test/)
+[![Test Suite](https://img.shields.io/badge/Tests-114%20Passed-emerald.svg)](test/)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun%201.3-fbf0df?logo=bun)](https://bun.sh)
 [![Storage: SQLite WAL](https://img.shields.io/badge/Storage-SQLite%20WAL-003B57?logo=sqlite)](https://sqlite.org)
 [![Protocol: MCP](https://img.shields.io/badge/Protocol-Model%20Context%20Protocol-7c3aed)](https://modelcontextprotocol.io)
@@ -51,6 +51,10 @@ SOTA memory architectures offer profound concepts, but their implementations are
 | **Systemd Service** | Zero-Touch Daemon Autostart | `mnemo service install` registers a lightweight systemd user service (`Restart=always`, <30MB RAM). |
 | **Hermes Agent Bridge** | Instant Context Injection | `mnemo-hermes "<prompt>"` pipes guardrails & relevant memory directly into Hermes Agent `--system`. |
 | **Atomic Online Backup**| Non-Blocking Snapshots | `mnemo backup create/list/restore` snapshots database atomically via SQLite `VACUUM INTO`. |
+| **Obsidian / Manus / OpenClaw** | Markdown-First Vault Mirror | `mnemo vault [export\|import\|sync]` maintains transparent human-editable Markdown vault with YAML frontmatter. |
+| **ICLR LongMemEval** | Standardized 5D Benchmark | `mnemo benchmark longmemeval` tests information extraction, multi-session reasoning, knowledge updates, temporal reasoning, and hallucination abstention. |
+| **Stanford HippoRAG 2** | Heterogeneous Graph & Communities | Recognition Memory Gating + Passage-Entity-Triple bipartite random walk + Graphiti-style community summaries (`mnemo community`). |
+| **Letta / MemGPT** | Dynamic Working Memory Blocks | `mnemo block [list\|get\|set\|append]` manages agent self-editable structured context blocks (`active_task`, `scratchpad`, `user_profile`) with token budgets. |
 
 ---
 
@@ -113,6 +117,22 @@ mnemo export team-guidelines.json -s global
 
 # Import portable memory pack into database & rebuild vector index locally
 mnemo import team-guidelines.json
+
+# Bi-directional sync with human-readable Markdown / Obsidian vault (.mnemo/vault/)
+mnemo vault sync
+mnemo vault export --vault ./my-obsidian-notes
+
+# Run LongMemEval 5-Dimension Benchmark (ICLR 2025/2026 Protocol)
+mnemo benchmark longmemeval
+
+# List or detect thematic community summaries (Graphiti/HippoRAG 2)
+mnemo community list
+mnemo community detect
+
+# Working Memory Blocks (Letta/MemGPT self-editing context)
+mnemo block list
+mnemo block set active_task "Refactoring auth middleware"
+mnemo block append scratchpad "Found edge case in token validation"
 ```
 
 ---
@@ -166,6 +186,14 @@ Add to your `mcpServers` configuration (`claude_desktop_config.json` or `opencod
 - `consolidate_memories()`: Run temporal pruning and associative link strengthening.
 - `get_profile(entity_type)`: Fetch Theory-of-Mind user worldview & constraints.
 - `forget_memory(id_or_query)`: Deactivate memory.
+- `export_vault(target_dir)`: Export memories to Markdown vault (.mnemo/vault) with YAML frontmatter.
+- `sync_vault(target_dir)`: Bi-directional reconciliation between SQLite and Markdown vault.
+- `run_benchmark()`: Execute LongMemEval 5-Dimension standardized evaluation suite.
+- `get_community_summaries(limit)`: Retrieve hierarchical community summaries (HippoRAG 2 / Graphiti).
+- `get_context_block(name)`: Read dynamic working memory block (Letta/MemGPT).
+- `update_context_block(name, content, token_limit)`: Update working memory block with token budget enforcement.
+- `append_context_block(name, content)`: Append to working memory block safely.
+- `list_context_blocks()`: List all active context blocks and token usage.
 
 ---
 
@@ -178,19 +206,28 @@ bun run src/server.ts
 Visit **`http://localhost:8788/dashboard`** or **`http://localhost:8788/`** in your browser to inspect the interactive 2D Canvas Knowledge Graph, monitor active negative constraints, execute 1-click Context Doctor repairs, and view 24-hour activity digests!
 
 ### REST API Endpoints:
-* `GET  /dashboard` $\to$ Visual single-page HTML web dashboard (zero dependencies)
-* `GET  /v1/health` $\to$ Daemon status & storage info
-* `POST /v1/memory/remember` $\to$ Store fact & extract triples (supports `valid_until`, `is_negative_constraint`, `failure_reason`)
-* `POST /v1/memory/recall` $\to$ Hybrid retrieval with bi-temporal filtering & resonance
-* `GET  /v1/digest` $\to$ 24-hour Brain activity digest & changelog
-* `GET  /v1/rules/export` $\to$ Export active guardrails in `agents.md`, `cursorrules`, or `claude.md`
-* `POST /v1/rules/sync` $\to$ Safely sync guardrails into target file with markers
-* `POST /v1/memory/capture/git` $\to$ Auto-capture latest commit into project memory
-* `POST /v1/memory/capture/error` $\to$ Record Reflexion troubleshooting playbook
-* `GET  /v1/doctor/audit` $\to$ Check graph integrity & orphan triples
-* `POST /v1/doctor/repair` $\to$ Execute automated Context Doctor health repair
-* `GET  /v1/memory/timeline` $\to$ Chronological mutation audit trail
+* `GET    /dashboard` $\to$ Visual single-page HTML web dashboard (zero dependencies)
+* `GET    /v1/health` $\to$ Daemon status & storage info
+* `POST   /v1/memory/remember` $\to$ Store fact & extract triples (supports `valid_until`, `is_negative_constraint`, `failure_reason`)
+* `POST   /v1/memory/recall` $\to$ Hybrid retrieval with bi-temporal filtering & resonance
+* `GET    /v1/digest` $\to$ 24-hour Brain activity digest & changelog
+* `GET    /v1/rules/export` $\to$ Export active guardrails in `agents.md`, `cursorrules`, or `claude.md`
+* `POST   /v1/rules/sync` $\to$ Safely sync guardrails into target file with markers
+* `POST   /v1/memory/capture/git` $\to$ Auto-capture latest commit into project memory
+* `POST   /v1/memory/capture/error` $\to$ Record Reflexion troubleshooting playbook
+* `GET    /v1/doctor/audit` $\to$ Check graph integrity & orphan triples
+* `POST   /v1/doctor/repair` $\to$ Execute automated Context Doctor health repair
+* `GET    /v1/memory/timeline` $\to$ Chronological mutation audit trail
 * `DELETE /v1/memory/:id` $\to$ Deactivate memory
+* `POST   /v1/vault/export` $\to$ Export memories to Markdown vault (.mnemo/vault)
+* `POST   /v1/vault/sync` $\to$ Bi-directional reconciliation with Markdown vault
+* `GET    /v1/benchmark/longmemeval` $\to$ Run LongMemEval benchmark and get JSON/markdown score report
+* `GET    /v1/communities` $\to$ Retrieve high-level graph community summaries
+* `GET    /v1/blocks` $\to$ List all working memory blocks
+* `GET    /v1/blocks/:id` $\to$ Get working memory block by name
+* `POST   /v1/blocks/:id` $\to$ Update working memory block content
+* `POST   /v1/blocks/:id/append` $\to$ Append line to working memory block
+* `DELETE /v1/blocks/:id` $\to$ Delete custom working memory block
 
 ---
 
@@ -265,7 +302,13 @@ bun test
 ✓ hermes_architecture.test.ts (6 tests: 3-Layer storage, Hash fast-path, Retrieval budget, TTL sweeper, Capacity eviction, Dreaming watermark)
 ✓ enhancements_and_hardening.test.ts (5 tests: Backup path, Noise filter, Alias auto-canonicalization, Offline dreamer fallback, Telemetry metrics)
 ✓ production_critique_fixes.test.ts (5 tests: Dynamic weighting & score clamp, Polarity conflict invalidation, Real-time TTL, Safe word-boundary forget, Recency feedback loop)
+✓ dreamer_and_ingest_fixes.test.ts (5 tests: Ingest notes, Watermark tracking, Exact predicates, Reinforced facts)
+✓ vault.test.ts (4 tests: YAML frontmatter, Category folders export, Content diff import, Bi-directional sync)
+✓ longmemeval.test.ts (1 test: ICLR 5-dimension benchmark: extraction, multi-session, updates, temporal, abstention)
+✓ hipporag2_and_community.test.ts (3 tests: Recognition memory gating, Heterogeneous bipartite graph, Community summaries)
+✓ blocks.test.ts (4 tests: Default blocks, Get/Set with token budget, Clean line append, Custom blocks lifecycle)
+✓ sota_integration.test.ts (4 tests: REST vault sync, LongMemEval endpoint, Community summaries, Blocks lifecycle)
 
-93 pass, 0 fail, 494 expect assertions (~1.9s total)
+114 pass, 0 fail, 621 expect assertions (~1.8s total)
 ```
 

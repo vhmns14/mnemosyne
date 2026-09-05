@@ -3,14 +3,19 @@ import { join } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 
 // Resolve default database directory ~/.mnemosyne/
-const defaultDir = join(homedir(), ".mnemosyne");
+let defaultDir = join(homedir(), ".mnemosyne");
 if (!existsSync(defaultDir)) {
   try {
     mkdirSync(defaultDir, { recursive: true });
   } catch {
-    // fallback to local directory if homedir is read-only
+    // fallback to local directory if homedir is read-only or restricted
+    defaultDir = join(process.cwd(), ".mnemo");
+    try {
+      mkdirSync(defaultDir, { recursive: true });
+    } catch {}
   }
 }
+
 
 export const CONFIG = {
   // Storage

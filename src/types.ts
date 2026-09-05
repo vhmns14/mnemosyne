@@ -563,5 +563,124 @@ export interface IngestResult {
   action: "ingested_note" | "inserted_fact" | "reinforced_fact" | "ignored_noise";
 }
 
+/**
+ * Fase 10: Markdown Vault Mirror & Obsidian Bridge Types
+ */
+export interface VaultFileFrontmatter {
+  id: string;
+  scope: MemoryScope;
+  category: MemoryCategory;
+  importance?: MemoryImportance;
+  structure_type?: MemoryStructureType;
+  tags?: string[];
+  is_negative_constraint?: boolean;
+  outcome?: MemoryOutcome;
+  valid_from?: string | number;
+  valid_until?: string | number | null;
+  updated_at?: string | number;
+  created_at?: string | number;
+}
 
+export interface VaultExportResult {
+  vault_dir: string;
+  total_exported: number;
+  by_category: Record<string, number>;
+  timestamp: number;
+}
 
+export interface VaultImportResult {
+  vault_dir: string;
+  total_scanned: number;
+  added: number;
+  updated: number;
+  skipped: number;
+  timestamp: number;
+}
+
+export interface VaultSyncResult {
+  vault_dir: string;
+  exported: number;
+  imported: number;
+  conflicts_resolved: number;
+  timestamp: number;
+}
+
+/**
+ * Fase 11: LongMemEval Benchmark Types (ICLR 2025/2026 Protocol)
+ */
+export type LongMemEvalDimension = 
+  | "information_extraction"
+  | "multi_session_reasoning"
+  | "knowledge_updates"
+  | "temporal_reasoning"
+  | "abstention";
+
+export interface LongMemEvalCase {
+  id: string;
+  dimension: LongMemEvalDimension;
+  description: string;
+  setup_memories: Array<{
+    content: string;
+    category?: MemoryCategory;
+    scope?: MemoryScope;
+    is_negative_constraint?: boolean;
+    valid_from?: number;
+    valid_until?: number | null;
+    tags?: string[];
+    outcome?: MemoryOutcome;
+  }>;
+  query: string;
+  expected_answer_keywords: string[];
+  unexpected_keywords?: string[];
+  must_abstain?: boolean;
+}
+
+export interface LongMemEvalScore {
+  dimension: LongMemEvalDimension;
+  total_cases: number;
+  passed_cases: number;
+  accuracy: number; // 0.0 to 1.0
+  avg_latency_ms: number;
+}
+
+export interface LongMemEvalReport {
+  timestamp: number;
+  total_cases: number;
+  passed_cases: number;
+  overall_accuracy: number; // 0.0 to 1.0
+  dimension_scores: Record<LongMemEvalDimension, LongMemEvalScore>;
+  verdict: "PASSED" | "FAILED";
+  duration_ms: number;
+}
+
+/**
+ * Fase 12: Community Summaries (Graphiti / GraphRAG style)
+ */
+export interface CommunitySummaryRecord {
+  id: string;
+  community_id: string;
+  label: string;
+  summary: string;
+  key_entities: string[];
+  member_memory_ids: string[];
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CommunitySummaryInput {
+  community_id: string;
+  label: string;
+  summary: string;
+  key_entities: string[];
+  member_memory_ids: string[];
+}
+
+/**
+ * Fase 13: Dynamic Working Memory Blocks (Letta / MemGPT style)
+ */
+export interface ContextBlockRecord {
+  name: string;
+  content: string;
+  token_limit: number;
+  updated_at: number;
+}
