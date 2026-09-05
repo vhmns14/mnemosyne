@@ -3,7 +3,7 @@
 > *Cross-Platform: Universal MCP Server · Standalone CLI (`mnemo`) · Local REST Daemon · Hermes Agent Pipe*  
 > *Synthesizing the state-of-the-art: **Honcho** (Theory of Mind), **Holographic Memory** (Associative Resonance), **Mem0** (Graph Triples), **Zep/Graphiti** (Bi-Temporal Validity), **Supermemory** (Negative Constraints), **LangMem** (Failure Retrospectives), and **Cognee** (Entity Canonicalization).*
 
-[![Test Suite](https://img.shields.io/badge/Tests-138%20Passed-emerald.svg)](test/)
+[![Test Suite](https://img.shields.io/badge/Tests-142%20Passed-emerald.svg)](test/)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun%201.3-fbf0df?logo=bun)](https://bun.sh)
 [![Storage: SQLite WAL](https://img.shields.io/badge/Storage-SQLite%20WAL-003B57?logo=sqlite)](https://sqlite.org)
 [![Protocol: MCP](https://img.shields.io/badge/Protocol-Model%20Context%20Protocol-7c3aed)](https://modelcontextprotocol.io)
@@ -63,6 +63,7 @@ SOTA memory architectures offer profound concepts, but their implementations are
 | **Symbol Code Anchoring** | Function/Class Belief Anchors | Anchors memories to `file.ts#symbol` via AST/regex, preventing false staleness when unrelated lines change. |
 | **Zero-LLM Intent Router** | Fast Deterministic Dispatch | `mnemo route` maps prompts to memory commands in <0.02ms with zero LLM token cost. |
 | **Native SSE Stream** | Swarm Event Push Protocol | `GET /v1/events` broadcasts mutation events (`MEMORY_CREATED`, `GUARDRAIL_TRIGGERED`, etc.) without polling. |
+| **Dialectic & Lexical Hardening** | Word-Order Fingerprint & FTS5 Triggers | Preserves token order and polarity distinction during fast-path dedup; native SQLite triggers synchronize full-text search across all writes. |
 
 ---
 
