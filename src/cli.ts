@@ -5,6 +5,7 @@ import { getDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
 import { isTransactionalNoise } from "./engine/dialectic.ts";
 import { formatBenchmarkReport } from "./engine/benchmark.ts";
+import { getModelBudgetProfile } from "./engine/compactor.ts";
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
 
 const db = getDatabase();
@@ -57,6 +58,9 @@ COMMANDS:
   benchmark [longmem]   Run LongMemEval standardized benchmark suite (ICLR 2025/2026)
   community / comms     List hierarchical community summaries (Graphiti style)
   block [list|get|set]  Dynamic working memory blocks (Letta style self-editing)
+  rollup [session_id]   Condense episodic micro-logs into a Decision Ledger macro-fact
+  route <prompt>        Zero-LLM fast deterministic intent router (< 0.02ms)
+  anchor <id> <file#s>  Anchor memory to file or specific symbol (function/class)
   preflight <cmd>       Evaluate shell command against RAM & negative constraints
   upsert <s> <p> <o>    Upsert semantic triple with automatic conflict resolution
   delete-source <sess>  Purge all memories and triples originating from a session
@@ -117,6 +121,7 @@ export async function runCli(args: string[]) {
       resolution: { type: "string", short: "r", default: "meso" },
       limit: { type: "string", short: "l", default: "5" },
       tokens: { type: "string" },
+      model: { type: "string", short: "m" },
       output: { type: "string", short: "o" },
       format: { type: "string" },
       target: { type: "string" },
@@ -342,12 +347,18 @@ Evaluate shell command against system guardrails (16GB RAM limit, no background,
       }
 
       case "inject": {
+        let maxTokens = values.tokens ? parseInt(values.tokens, 10) : undefined;
+        if (!maxTokens && values.model) {
+          const profile = getModelBudgetProfile(values.model);
+          maxTokens = profile.recommended_memory_budget_tokens;
+        }
+
         const res = await engine.recall({
           query: contentOrQuery || "general",
           scope: (values.scope as any) || "all",
           resolution: "macro",
           limit: 5,
-          max_tokens: values.tokens ? parseInt(values.tokens, 10) : undefined,
+          max_tokens: maxTokens,
         });
 
         process.stdout.write(res.formatted + "\n");
@@ -575,6 +586,24 @@ Evaluate shell command against system guardrails (16GB RAM limit, no background,
           }
         }
         console.log("─".repeat(60) + "\n");
+        break;
+      }
+
+      case "diff": {
+        const targetA = contentOrQuery;
+        const targetB = positionals[0];
+        if (!targetA) {
+          console.error("❌ Usage: mnemo diff <memory_id_or_query> [second_memory_id]");
+          process.exit(1);
+        }
+
+        try {
+          const diffResult = engine.diff(targetA, targetB);
+          console.log("\n" + diffResult.formatted + "\n");
+        } catch (err: any) {
+          console.error(`❌ Diff Error: ${err.message}`);
+          process.exit(1);
+        }
         break;
       }
 
@@ -1262,6 +1291,64 @@ Evaluate shell command against system guardrails (16GB RAM limit, no background,
           if (deleted) console.log(`\x1b[32m✔ Block '${blockName}' deleted successfully!\x1b[0m`);
           else console.log(`\x1b[33mBlock '${blockName}' not found.\x1b[0m`);
         }
+        break;
+      }
+
+      case "anchor": {
+        const memoryId = positionals[0];
+        const filePath = positionals[1];
+        if (!memoryId || !filePath) {
+          console.error("❌ Error: Please provide memoryId and filePath. E.g. mnemo anchor <id> <filePath#symbolName>");
+          process.exit(1);
+        }
+        const record = engine.anchorMemory(memoryId, filePath);
+        console.log(`\n⚓ Memory anchored successfully!`);
+        console.log(`  Memory ID: \x1b[36m${record.memory_id}\x1b[0m`);
+        console.log(`  File:      \x1b[33m${record.file_path}\x1b[0m`);
+        if (record.symbol_name) console.log(`  Symbol:    \x1b[35m${record.symbol_name}\x1b[0m (Hash: ${record.symbol_hash?.slice(0, 12)}...)`);
+        console.log(`  Commit:    ${record.commit_hash}`);
+        console.log(`  Status:    \x1b[32m${record.status}\x1b[0m\n`);
+        break;
+      }
+
+      case "rollup": {
+        const sessionId = positionals[0] || values.session;
+        console.log(`\n🔄 Rolling up episodic micro-memories for session '${sessionId || "auto"}'...`);
+        const result = await engine.rollup({
+          session_id: sessionId,
+          tag: values.tag,
+        });
+
+        if (result.rolled_up_count === 0) {
+          console.log(`  \x1b[33m${result.summary}\x1b[0m\n`);
+          break;
+        }
+
+        console.log(`  \x1b[32m✔ ${result.summary}\x1b[0m`);
+        console.log(`  Macro Memory ID: \x1b[36m${result.macro_memory_id}\x1b[0m`);
+        console.log(`  Archived Micro-Items: ${result.archived_ids.length}`);
+        console.log(`\n  Decisions (${result.decision_ledger.decisions.length}):`);
+        for (const d of result.decision_ledger.decisions) console.log(`    • ${d}`);
+        console.log(`  Constraints (${result.decision_ledger.constraints.length}):`);
+        for (const c of result.decision_ledger.constraints) console.log(`    • ${c}`);
+        console.log(`  Outcomes (${result.decision_ledger.outcomes.length}):`);
+        for (const o of result.decision_ledger.outcomes) console.log(`    • ${o}`);
+        console.log("");
+        break;
+      }
+
+      case "route": {
+        if (!contentOrQuery) {
+          console.error("❌ Error: Please provide a prompt to route. E.g. mnemo route 'don't use any in typescript'");
+          process.exit(1);
+        }
+        const result = engine.route(contentOrQuery);
+        console.log(`\n🧭 Zero-LLM Fast Intent Route:`);
+        console.log(`  Intent:             \x1b[36m${result.intent}\x1b[0m (Confidence: ${(result.confidence * 100).toFixed(0)}%)`);
+        console.log(`  Suggested CLI:      \x1b[32m${result.suggested_command}\x1b[0m`);
+        console.log(`  Suggested Tool:     \x1b[33m${result.suggested_tool}\x1b[0m`);
+        console.log(`  Tool Arguments:     ${JSON.stringify(result.tool_arguments)}`);
+        console.log(`  Reason:             ${result.reason}\n`);
         break;
       }
 

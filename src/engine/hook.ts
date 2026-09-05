@@ -1,9 +1,30 @@
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, chmodSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, chmodSync, readFileSync, statSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import type { GitHookResult } from "../types.ts";
 
 const HOOK_MARKER_START = "# >>> MNEMOSYNE GIT FIREWALL START >>>";
 const HOOK_MARKER_END = "# <<< MNEMOSYNE GIT FIREWALL END <<<";
+
+/**
+ * Resolves the actual hooks directory, supporting normal repos, submodules, and worktrees.
+ */
+export function resolveGitHooksDir(repoRoot: string): string {
+  const gitPath = join(repoRoot, ".git");
+  try {
+    const stat = statSync(gitPath);
+    if (stat.isFile()) {
+      const content = readFileSync(gitPath, "utf-8").trim();
+      if (content.startsWith("gitdir:")) {
+        const relOrAbs = content.replace(/^gitdir:\s*/, "").trim();
+        const actualGitDir = resolve(repoRoot, relOrAbs);
+        return join(actualGitDir, "hooks");
+      }
+    }
+  } catch {
+    // fallback to standard .git/hooks
+  }
+  return join(repoRoot, ".git", "hooks");
+}
 
 /**
  * Finds the nearest .git directory by walking up the path.
@@ -73,7 +94,7 @@ export function installGitHook(targetDir?: string): GitHookResult {
     };
   }
 
-  const hooksDir = join(repoRoot, ".git", "hooks");
+  const hooksDir = resolveGitHooksDir(repoRoot);
   if (!existsSync(hooksDir)) {
     try {
       mkdirSync(hooksDir, { recursive: true });
@@ -136,7 +157,8 @@ export function uninstallGitHook(targetDir?: string): GitHookResult {
     };
   }
 
-  const hookPath = join(repoRoot, ".git", "hooks", "pre-commit");
+  const hooksDir = resolveGitHooksDir(repoRoot);
+  const hookPath = join(hooksDir, "pre-commit");
   if (!existsSync(hookPath)) {
     return {
       success: true,

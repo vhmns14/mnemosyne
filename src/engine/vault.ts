@@ -17,7 +17,10 @@ import type {
  * otherwise falls back to ~/.mnemosyne/vault.
  */
 export function resolveVaultDir(customDir?: string): string {
-  if (customDir) return path.resolve(customDir);
+  if (customDir) {
+    if (customDir.includes("\0")) throw new Error("Invalid vault directory: null bytes detected");
+    return path.resolve(customDir);
+  }
 
   const ws = detectWorkspace();
   if (ws && ws.root_path) {
@@ -145,6 +148,7 @@ export function parseFrontmatter(rawText: string): { meta: VaultFileFrontmatter;
     if (colonIdx === -1) continue;
 
     const key = trimmed.substring(0, colonIdx).trim();
+    if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
     let val = trimmed.substring(colonIdx + 1).trim();
 
     if (key === "tags") {
@@ -234,6 +238,7 @@ function walkMarkdownFiles(dir: string): string[] {
   const list = fs.readdirSync(dir, { withFileTypes: true });
 
   for (const entry of list) {
+    if (entry.isSymbolicLink()) continue;
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       results.push(...walkMarkdownFiles(fullPath));

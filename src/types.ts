@@ -349,6 +349,8 @@ export interface GitAnchorRecord {
   memory_id: string;
   repo_path: string;
   file_path: string;
+  symbol_name?: string; // SOTA 2026: function, class, or interface symbol anchor
+  symbol_hash?: string; // SHA-256 hash of the specific symbol content
   commit_hash: string;
   file_mtime: number;
   file_hash?: string;
@@ -684,3 +686,138 @@ export interface ContextBlockRecord {
   token_limit: number;
   updated_at: number;
 }
+
+/**
+ * SOTA 2026: Semantic Time-Travel Memory Diff
+ */
+export interface WordDiffItem {
+  type: "added" | "removed" | "unchanged";
+  value: string;
+}
+
+export interface MemoryDiffResult {
+  target_a: {
+    id: string;
+    content: string;
+    category: string;
+    scope: string;
+    importance: string;
+    status: string;
+    created_at: number;
+    updated_at: number;
+  };
+  target_b: {
+    id: string;
+    content: string;
+    category: string;
+    scope: string;
+    importance: string;
+    status: string;
+    created_at: number;
+    updated_at: number;
+  };
+  field_changes: {
+    content_changed: boolean;
+    category_changed: boolean;
+    scope_changed: boolean;
+    importance_changed: boolean;
+  };
+  word_diff: WordDiffItem[];
+  formatted: string;
+  summary: string;
+}
+
+/**
+ * SOTA 2026: Adaptive Model Budget Compactor
+ */
+export type SupportedModelFamily = "claude" | "gpt4" | "ollama" | "hermes" | "default";
+
+export interface ModelBudgetProfile {
+  model_family: SupportedModelFamily;
+  context_window_tokens: number;
+  recommended_memory_budget_tokens: number;
+  max_negative_constraints: number;
+  max_failure_lessons: number;
+}
+
+/**
+ * SOTA 2026: Multi-Agent Dispute Arbitration
+ */
+export interface DisputeArbitrationResult {
+  key: string;
+  session_id: string;
+  is_disputed: boolean;
+  disputing_agents: string[];
+  competing_values: Array<{ agent_id: string; value: any; version: number; updated_at: number }>;
+  arbitrated_winner?: { agent_id: string; value: any; reason: string };
+  status: "resolved" | "contested" | "unanimous";
+}
+
+/**
+ * SOTA 2026: Episodic Rollup & Auto-Compaction
+ */
+export interface RollupOptions {
+  session_id?: string;
+  tag?: string;
+  older_than_ms?: number;
+  max_memories?: number;
+  actor?: "user" | "agent";
+  auto_archive?: boolean;
+}
+
+export interface RollupResult {
+  session_id: string;
+  rolled_up_count: number;
+  macro_memory_id: string;
+  summary: string;
+  decision_ledger: {
+    decisions: string[];
+    constraints: string[];
+    failures_encountered: string[];
+    outcomes: string[];
+  };
+  archived_ids: string[];
+}
+
+/**
+ * SOTA 2026: Zero-LLM Fast Intent Router
+ */
+export type RouteIntentType =
+  | "remember_negative"
+  | "remember_preference"
+  | "remember_fact"
+  | "remediation"
+  | "recall_architecture"
+  | "recall_decisions"
+  | "preflight"
+  | "staleness_check"
+  | "rollup"
+  | "general_recall";
+
+export interface RouteResult {
+  intent: RouteIntentType;
+  confidence: number;
+  suggested_command: string;
+  suggested_tool: string;
+  tool_arguments: Record<string, any>;
+  reason: string;
+}
+
+/**
+ * SOTA 2026: Real-Time Server-Sent Events (SSE) Stream
+ */
+export type MemoryEventType =
+  | "MEMORY_CREATED"
+  | "MEMORY_UPDATED"
+  | "MEMORY_DELETED"
+  | "GUARDRAIL_TRIGGERED"
+  | "DISPUTE_RAISED"
+  | "ROLLUP_COMPLETED"
+  | "DREAM_COMPLETED";
+
+export interface MemoryEventMessage {
+  type: MemoryEventType;
+  timestamp: number;
+  data: any;
+}
+

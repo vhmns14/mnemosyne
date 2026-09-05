@@ -482,6 +482,55 @@ const TOOLS = [
       type: "object",
       properties: {}
     }
+  },
+  {
+    name: "diff_memories",
+    description: "Compare two memory records or a memory and its superseded historical revision (SOTA 2026 Time-Travel Diff).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_a: { type: "string", description: "First memory UUID or target to compare." },
+        target_b: { type: "string", description: "Optional second memory UUID to compare against." }
+      },
+      required: ["target_a"]
+    }
+  },
+  {
+    name: "rollup_session",
+    description: "Episodic Rollup & Auto-Compaction: condenses cluttered episodic micro-task memories into a single concise Decision Ledger macro-fact.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Target session ID to roll up. Defaults to active/recent session." },
+        tag: { type: "string", description: "Optional tag filter." },
+        max_memories: { type: "number", description: "Maximum micro-memories to roll up (default 50)." },
+        auto_archive: { type: "boolean", description: "Whether to deactivate source micro-memories (default true)." }
+      }
+    }
+  },
+  {
+    name: "route_intent",
+    description: "Zero-LLM Fast Intent Router: deterministic sub-millisecond classifier mapping developer queries to recommended Mnemosyne tools and commands.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "The natural language developer prompt or error string." }
+      },
+      required: ["prompt"]
+    }
+  },
+  {
+    name: "anchor_code_memory",
+    description: "Anchor a memory belief to a specific codebase file and optional symbol (function/class/interface) to track code drift.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memory_id: { type: "string", description: "Memory UUID to anchor." },
+        file_path: { type: "string", description: "Path to file, optionally with #symbolName (e.g. 'src/engine/embedder.ts#generateLocalEmbedding')." },
+        symbol_name: { type: "string", description: "Optional explicit symbol name." }
+      },
+      required: ["memory_id", "file_path"]
+    }
   }
 ];
 
@@ -999,6 +1048,46 @@ async function handleMessage(line: string) {
 
       if (name === "list_context_blocks") {
         const res = engine.listBlocks();
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "diff_memories") {
+        const res = engine.diff(args.target_a, args.target_b);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "rollup_session") {
+        const res = await engine.rollup(args || {});
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "route_intent") {
+        const res = engine.route(args.prompt);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+        });
+        return;
+      }
+
+      if (name === "anchor_code_memory") {
+        const res = engine.anchorMemory(args.memory_id, args.file_path, args.repo_path, args.symbol_name);
         sendJson({
           jsonrpc: "2.0",
           id,

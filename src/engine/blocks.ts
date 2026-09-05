@@ -20,6 +20,20 @@ const DEFAULT_BLOCKS: Array<{ name: string; content: string; limit: number }> = 
 ];
 
 /**
+ * Validates block name to prevent prototype pollution, path traversal, and malicious strings.
+ */
+export function validateBlockName(name: string): string {
+  const clean = (name || "").trim();
+  if (!clean || clean.length > 64 || !/^[a-zA-Z0-9_\-\.]+$/.test(clean)) {
+    throw new Error(`Invalid block name '${name}'. Must be 1-64 alphanumeric characters, underscores, hyphens, or dots.`);
+  }
+  if (clean === "__proto__" || clean === "constructor" || clean === "prototype" || clean.includes("..")) {
+    throw new Error(`Reserved or forbidden block name '${name}'.`);
+  }
+  return clean;
+}
+
+/**
  * Initializes standard default working memory blocks if they do not already exist.
  */
 export function initDefaultContextBlocks(db: Database): void {
@@ -38,10 +52,11 @@ export function initDefaultContextBlocks(db: Database): void {
  * Retrieves a dynamic context block by name.
  */
 export function getContextBlock(db: Database, name: string): ContextBlockRecord | null {
+  const validName = validateBlockName(name);
   initDefaultContextBlocks(db);
   const row = db
     .query("SELECT name, content, token_limit, updated_at FROM context_blocks WHERE name = ?")
-    .get(name) as any;
+    .get(validName) as any;
 
   if (!row) return null;
   return {
@@ -61,6 +76,7 @@ export function setContextBlock(
   content: string,
   tokenLimit?: number
 ): ContextBlockRecord {
+  const validName = validateBlockName(name);
   initDefaultContextBlocks(db);
   const now = Date.now();
 
@@ -128,6 +144,7 @@ export function listContextBlocks(db: Database): ContextBlockRecord[] {
  * Deletes a custom context block.
  */
 export function deleteContextBlock(db: Database, name: string): boolean {
-  const res = db.prepare("DELETE FROM context_blocks WHERE name = ?").run(name);
+  const validName = validateBlockName(name);
+  const res = db.prepare("DELETE FROM context_blocks WHERE name = ?").run(validName);
   return res.changes > 0;
 }

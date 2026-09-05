@@ -101,11 +101,33 @@ export async function importMemoryPack(
   db: Database,
   packInput: string | MemoryPack
 ): Promise<{ imported_memories: number; imported_triples: number; imported_aliases: number }> {
-  const pack: MemoryPack = typeof packInput === "string" ? JSON.parse(packInput) : packInput;
+  if (!packInput) throw new Error("Memory pack input cannot be empty.");
+  let pack: any;
+  if (typeof packInput === "string") {
+    try {
+      pack = JSON.parse(packInput);
+    } catch (err: any) {
+      throw new Error(`Invalid memory pack JSON: ${err.message}`);
+    }
+  } else {
+    pack = packInput;
+  }
+
+  if (!pack || typeof pack !== "object") {
+    throw new Error("Invalid memory pack: root must be a JSON object.");
+  }
+
+  const memories = Array.isArray(pack.memories) ? pack.memories : [];
+  const triples = Array.isArray(pack.triples) ? pack.triples : [];
+  const aliases = Array.isArray(pack.aliases) ? pack.aliases : [];
 
   // Verify cryptographic checksum
   if (pack.checksum) {
-    const expectedChecksum = computePackChecksum(pack);
+    const expectedChecksum = computePackChecksum({
+      memories,
+      triples,
+      aliases,
+    });
     if (pack.checksum !== expectedChecksum) {
       throw new Error(`Checksum mismatch: pack data has been tampered with or corrupted (expected ${expectedChecksum}, got ${pack.checksum})`);
     }
@@ -114,7 +136,7 @@ export async function importMemoryPack(
   let memCount = 0;
   const oldToNewMemId = new Map<string, string>();
 
-  for (const m of pack.memories) {
+  for (const m of memories) {
     const newId = await rememberMemory(db, {
       content: m.content,
       scope: m.scope,
@@ -135,14 +157,14 @@ export async function importMemoryPack(
   }
 
   let tripleCount = 0;
-  if (Array.isArray(pack.triples) && pack.triples.length > 0) {
+  if (triples.length > 0) {
     const insertTripleStmt = db.prepare(`
       INSERT OR IGNORE INTO entity_triples (
         id, subject, predicate, object, memory_id, confidence, is_active, valid_from, valid_until, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    for (const t of pack.triples) {
+    for (const t of triples) {
       const targetMemoryId = t.memory_id ? (oldToNewMemId.get(t.memory_id) || null) : null;
       insertTripleStmt.run(
         randomUUID(),
@@ -161,7 +183,7 @@ export async function importMemoryPack(
   }
 
   let aliasCount = 0;
-  for (const a of pack.aliases) {
+  for (const a of aliases) {
     addEntityAlias(db, a.alias, a.canonical_name);
     aliasCount++;
   }

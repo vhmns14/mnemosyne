@@ -173,4 +173,80 @@ export class BlackboardManager {
       .run(sessionId.trim());
     return res.changes;
   }
+
+  /**
+   * Post a competing value for an existing key, triggering dispute detection & arbitration
+   */
+  contest(
+    sessionId: string,
+    key: string,
+    competingValue: any,
+    authorAgentId: string,
+    reason: string = "Contradictory claim by peer agent"
+  ): import("../types.ts").DisputeArbitrationResult {
+    const sId = sessionId.trim();
+    const k = key.trim();
+    const current = this.get(sId, k);
+
+    if (!current) {
+      this.set(sId, k, competingValue, { authorAgentId, stateType: "hypothesis" });
+      return {
+        key: k,
+        session_id: sId,
+        is_disputed: false,
+        disputing_agents: [authorAgentId],
+        competing_values: [{ agent_id: authorAgentId, value: competingValue, version: 1, updated_at: Date.now() }],
+        status: "unanimous",
+      };
+    }
+
+    const competingStr = typeof competingValue === "string" ? competingValue : JSON.stringify(competingValue);
+    const currentStr = typeof current.value === "string" ? current.value : JSON.stringify(current.value);
+
+    if (competingStr === currentStr) {
+      return {
+        key: k,
+        session_id: sId,
+        is_disputed: false,
+        disputing_agents: [current.author_agent_id, authorAgentId],
+        competing_values: [
+          { agent_id: current.author_agent_id, value: current.value, version: current.version, updated_at: current.updated_at },
+        ],
+        status: "unanimous",
+      };
+    }
+
+    const competingList = [
+      { agent_id: current.author_agent_id, value: current.value, version: current.version, updated_at: current.updated_at },
+      { agent_id: authorAgentId, value: competingValue, version: current.version + 1, updated_at: Date.now() },
+    ];
+
+    let winner = competingList[1];
+    let arbReason = `Peer agent ${authorAgentId} submitted updated claim (${reason}).`;
+
+    if (current.author_agent_id === "main" || current.author_agent_id === "lead") {
+      winner = competingList[0];
+      arbReason = `Preserved authority of leading agent (${current.author_agent_id}).`;
+    } else {
+      this.set(sId, k, competingValue, {
+        authorAgentId,
+        stateType: "verified_fact",
+      });
+    }
+
+    return {
+      key: k,
+      session_id: sId,
+      is_disputed: true,
+      disputing_agents: [current.author_agent_id, authorAgentId],
+      competing_values: competingList,
+      arbitrated_winner: {
+        agent_id: winner.agent_id,
+        value: winner.value,
+        reason: arbReason,
+      },
+      status: "resolved",
+    };
+  }
 }
+

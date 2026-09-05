@@ -31,6 +31,19 @@ import { exportVault, importVault, syncVault } from "./vault.ts";
 import { runLongMemEval } from "./benchmark.ts";
 import { detectAndSummarizeCommunities, getCommunitySummaries } from "./community.ts";
 import { getContextBlock, setContextBlock, appendContextBlock, listContextBlocks, deleteContextBlock } from "./blocks.ts";
+import { diffMemories } from "./diff.ts";
+import { compactContextAdaptive, getModelBudgetProfile } from "./compactor.ts";
+import { rollupSessionMemories } from "./rollup.ts";
+import { routeIntent } from "./router.ts";
+import {
+  quantizeToBinary,
+  hammingDistance,
+  binaryCosineSimilarity,
+  binaryNormalizedSimilarity,
+  binaryToHex,
+  hexToBinary,
+  fastBinaryFilter,
+} from "./embedder.ts";
 import { randomUUID } from "node:crypto";
 import type { 
   RecallOptions, RememberOptions, ScoredMemory, MemoryRecord, PersonaProfile, 
@@ -44,19 +57,50 @@ import type {
   FactInput, UpsertFactResult, StandingCard, DeleteBySourceOptions, DeleteBySourceResult,
   IngestOptions, IngestResult, HermesStats, HermesDreamReport, UnifiedDreamReport,
   VaultExportResult, VaultImportResult, VaultSyncResult,
-  LongMemEvalReport, LongMemEvalCase, CommunitySummaryRecord, ContextBlockRecord
+  LongMemEvalReport, LongMemEvalCase, CommunitySummaryRecord, ContextBlockRecord,
+  MemoryDiffResult, ModelBudgetProfile, DisputeArbitrationResult,
+  RollupOptions, RollupResult, RouteIntentType, RouteResult,
+  MemoryEventType, MemoryEventMessage
 } from "../types.ts";
 
 
 export class MnemosyneEngine {
   private _blackboard: BlackboardManager;
   private l1Cache: L1HotCache;
+  private eventListeners: Set<(event: MemoryEventMessage) => void> = new Set();
 
   constructor(private db: Database) {
     this._blackboard = new BlackboardManager(this.db);
     this.l1Cache = new L1HotCache(64);
     // Seed default remediation playbooks (e.g. agentrouter 401 troubleshooting)
     seedWorkspaceRemediations(this.db);
+  }
+
+  /**
+   * Subscribe to real-time cognitive memory mutation events.
+   * Returns an unsubscribe function.
+   */
+  onEvent(listener: (event: MemoryEventMessage) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
+  /**
+   * Broadcasts a cognitive memory event to all registered listeners.
+   */
+  emitEvent(type: MemoryEventType, data: any): void {
+    const message: MemoryEventMessage = {
+      type,
+      timestamp: Date.now(),
+      data,
+    };
+    for (const listener of this.eventListeners) {
+      try {
+        listener(message);
+      } catch {
+        // Safe isolation
+      }
+    }
   }
 
   /**
@@ -158,6 +202,7 @@ export class MnemosyneEngine {
         });
       }
     } catch {}
+    this.emitEvent("MEMORY_CREATED", { id, options });
     return id;
   }
 
@@ -497,10 +542,10 @@ export class MnemosyneEngine {
   }
 
   /**
-   * Anchors a memory to a codebase file and Git state.
+   * Anchors a memory to a codebase file and Git state, with optional symbol-level granularity.
    */
-  anchorMemory(memoryId: string, filePath: string, repoPath?: string): GitAnchorRecord {
-    return anchorMemory(this.db, memoryId, filePath, repoPath);
+  anchorMemory(memoryId: string, filePath: string, repoPath?: string, symbolName?: string): GitAnchorRecord {
+    return anchorMemory(this.db, memoryId, filePath, repoPath, symbolName);
   }
 
   /**
@@ -536,7 +581,10 @@ export class MnemosyneEngine {
    */
   getMemory(id: string): MemoryRecord | null {
     const cached = this.l1Cache.get(id);
-    if (cached) return cached;
+    if (cached) {
+      if (cached.is_active) return cached;
+      return null;
+    }
 
     const row = this.db.query("SELECT * FROM memories WHERE id = ? AND is_active = 1").get(id) as any;
     if (!row) return null;
@@ -811,6 +859,87 @@ export class MnemosyneEngine {
 
   deleteBlock(name: string): boolean {
     return deleteContextBlock(this.db, name);
+  }
+
+  // ==========================================
+  // SOTA 2026: Time-Travel Diff & Adaptive Budget
+  // ==========================================
+  diff(targetA: string, targetB?: string): MemoryDiffResult {
+    return diffMemories(this.db, targetA, targetB);
+  }
+
+  compactAdaptive(
+    memories: ScoredMemory[],
+    options?: { model?: string; maxTokens?: number; persona?: PersonaProfile }
+  ): { formatted: string; budget: TokenBudget; profile: ModelBudgetProfile } {
+    return compactContextAdaptive(memories, options);
+  }
+
+  contestBlackboard(
+    sessionId: string,
+    key: string,
+    competingValue: any,
+    agentId: string,
+    reason?: string
+  ): DisputeArbitrationResult {
+    return this._blackboard.contest(sessionId, key, competingValue, agentId, reason);
+  }
+
+  // ==========================================
+  // SOTA 2026: Fase 15 Additions
+  // ==========================================
+
+  /**
+   * Automatically compacts episodic micro-task memories into a single Decision Ledger macro-fact.
+   */
+  async rollup(options: RollupOptions = {}): Promise<RollupResult> {
+    const result = await rollupSessionMemories(this.db, options);
+    for (const archivedId of result.archived_ids) {
+      this.l1Cache.delete(archivedId);
+    }
+    if (result.rolled_up_count > 0) {
+      this.emitEvent("ROLLUP_COMPLETED", result);
+    }
+    return result;
+  }
+
+  /**
+   * Sub-millisecond deterministic intent classifier (Zero-LLM token spend).
+   */
+  route(prompt: string): RouteResult {
+    return routeIntent(prompt);
+  }
+
+  /**
+   * 1-Bit Binary Vector Quantization (BQ): Compress float32 vector into 48-byte bit-packed array.
+   */
+  quantizeEmbedding(vector: Float32Array | number[]): Uint8Array {
+    return quantizeToBinary(vector);
+  }
+
+  /**
+   * Computes fast bitwise Hamming Distance using 256-byte O(1) popcount lookup table.
+   */
+  computeHammingDistance(a: Uint8Array, b: Uint8Array): number {
+    return hammingDistance(a, b);
+  }
+
+  /**
+   * Approximates cosine similarity between two bit-packed vectors in < 0.001ms.
+   */
+  computeBinaryCosineSimilarity(a: Uint8Array, b: Uint8Array, totalBits?: number): number {
+    return binaryCosineSimilarity(a, b, totalBits);
+  }
+
+  /**
+   * Ultra-fast candidate pre-filtering using 1-bit Hamming distance.
+   */
+  fastBinarySearch<T extends { id: string; binary: Uint8Array }>(
+    queryBinary: Uint8Array,
+    candidates: T[],
+    topK?: number
+  ): Array<T & { distance: number; score: number }> {
+    return fastBinaryFilter(queryBinary, candidates, topK);
   }
 }
 

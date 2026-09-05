@@ -152,3 +152,72 @@ export function compactContextWithBudget(
     },
   };
 }
+
+/**
+ * Returns optimal token budget profile based on model family.
+ */
+export function getModelBudgetProfile(modelName?: string): import("../types.ts").ModelBudgetProfile {
+  const clean = (modelName || "").toLowerCase().trim();
+  if (clean.includes("claude")) {
+    return {
+      model_family: "claude",
+      context_window_tokens: 200_000,
+      recommended_memory_budget_tokens: 8_000,
+      max_negative_constraints: 25,
+      max_failure_lessons: 20,
+    };
+  }
+  if (clean.includes("gpt") || clean.includes("o1") || clean.includes("o3") || clean.includes("openai")) {
+    return {
+      model_family: "gpt4",
+      context_window_tokens: 128_000,
+      recommended_memory_budget_tokens: 4_000,
+      max_negative_constraints: 20,
+      max_failure_lessons: 15,
+    };
+  }
+  if (clean.includes("hermes")) {
+    return {
+      model_family: "hermes",
+      context_window_tokens: 8_192,
+      recommended_memory_budget_tokens: 2_000,
+      max_negative_constraints: 10,
+      max_failure_lessons: 8,
+    };
+  }
+  if (clean.includes("ollama") || clean.includes("qwen") || clean.includes("llama") || clean.includes("local")) {
+    return {
+      model_family: "ollama",
+      context_window_tokens: 8_192,
+      recommended_memory_budget_tokens: 1_200,
+      max_negative_constraints: 8,
+      max_failure_lessons: 5,
+    };
+  }
+
+  return {
+    model_family: "default",
+    context_window_tokens: 32_000,
+    recommended_memory_budget_tokens: 2_048,
+    max_negative_constraints: 15,
+    max_failure_lessons: 10,
+  };
+}
+
+/**
+ * Adaptive context compactor: adapts token budget automatically to the target LLM.
+ */
+export function compactContextAdaptive(
+  memories: ScoredMemory[],
+  options: { model?: string; maxTokens?: number; persona?: PersonaProfile } = {}
+): { formatted: string; budget: TokenBudget; profile: import("../types.ts").ModelBudgetProfile } {
+  const profile = getModelBudgetProfile(options.model);
+  const budget = options.maxTokens !== undefined ? options.maxTokens : profile.recommended_memory_budget_tokens;
+  const result = compactContextWithBudget(memories, budget, options.persona);
+
+  return {
+    ...result,
+    profile,
+  };
+}
+

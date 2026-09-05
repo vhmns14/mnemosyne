@@ -196,6 +196,15 @@ export function detectAndSummarizeCommunities(db: Database): CommunitySummaryRec
     });
   }
 
+  // Prune any stale community records not present in the current detection pass
+  if (results.length > 0) {
+    const keepIds = results.map((r) => r.id);
+    const placeholders = keepIds.map(() => "?").join(",");
+    db.prepare(`DELETE FROM community_summaries WHERE id NOT IN (${placeholders})`).run(...keepIds);
+  } else {
+    db.exec("DELETE FROM community_summaries");
+  }
+
   return results;
 }
 

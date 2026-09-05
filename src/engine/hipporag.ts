@@ -64,11 +64,12 @@ export function computeHippoPageRank(
       )
       .all(...seedIds) as any[];
 
-    const seedEntities: string[] = [];
+    const seedEntitiesSet = new Set<string>();
     for (const st of seedTriples) {
-      if (isInformativeEntity(st.subject)) seedEntities.push(st.subject);
-      if (isInformativeEntity(st.object)) seedEntities.push(st.object);
+      if (isInformativeEntity(st.subject)) seedEntitiesSet.add(st.subject);
+      if (isInformativeEntity(st.object)) seedEntitiesSet.add(st.object);
     }
+    const seedEntities = Array.from(seedEntitiesSet);
 
     if (seedEntities.length > 0) {
       const entPlaceholders = seedEntities.map(() => "?").join(",");

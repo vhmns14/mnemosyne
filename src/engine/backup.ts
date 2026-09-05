@@ -38,6 +38,16 @@ export function getDefaultBackupDir(customDbPath?: string): string {
  * Does not block readers or writers and produces a clean, defragmented .db file.
  */
 export function createBackup(db: Database, targetDir?: string): BackupResult {
+  if (targetDir && targetDir.includes("\0")) {
+    return {
+      success: false,
+      backupPath: "",
+      sizeBytes: 0,
+      timestamp: Date.now(),
+      message: "Invalid target directory: null bytes detected",
+    };
+  }
+
   const dir = targetDir ? resolve(targetDir) : getDefaultBackupDir(db.filename);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });

@@ -85,6 +85,39 @@ describe("Mnemosyne SOTA Expansion: End-to-End REST & Engine Integration Suite",
           }
         }
 
+        // SOTA 2026: Episodic Rollup & Auto-Compaction
+        if (req.method === "POST" && (url.pathname === "/v1/memory/rollup" || url.pathname === "/v1/rollup")) {
+          const body = (await req.json().catch(() => ({}))) as any;
+          const result = await engine.rollup(body);
+          return Response.json({ success: true, ...result });
+        }
+
+        // SOTA 2026: Zero-LLM Fast Intent Router
+        if (req.method === "POST" && (url.pathname === "/v1/memory/route" || url.pathname === "/v1/route")) {
+          const body = (await req.json().catch(() => ({}))) as any;
+          const result = engine.route(body.prompt || body.query || "");
+          return Response.json({ success: true, ...result });
+        }
+
+        // SOTA 2026: Real-Time SSE Stream
+        if (req.method === "GET" && url.pathname === "/v1/events") {
+          const stream = new ReadableStream({
+            start(controller) {
+              const encoder = new TextEncoder();
+              controller.enqueue(
+                encoder.encode(`event: connected\ndata: ${JSON.stringify({ timestamp: Date.now() })}\n\n`)
+              );
+              controller.close();
+            },
+          });
+          return new Response(stream, {
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+            },
+          });
+        }
+
         return Response.json({ error: "not found" }, { status: 404 });
       },
     });
@@ -177,5 +210,49 @@ describe("Mnemosyne SOTA Expansion: End-to-End REST & Engine Integration Suite",
     expect(getRes.status).toBe(200);
     const getData = (await getRes.json()) as any;
     expect(getData.block.name).toBe("active_task");
+  });
+
+  test("REST POST /v1/memory/rollup and /v1/memory/route", async () => {
+    // 1. Ingest episodic memories
+    await engine.remember({
+      content: "Switched to Bun HTTP server for zero-overhead streaming",
+      source_session: "rest-session-1",
+    });
+    await engine.remember({
+      content: "Never expose private keys in git repository",
+      source_session: "rest-session-1",
+      is_negative_constraint: true,
+    });
+
+    // 2. Rollup endpoint
+    const rollRes = await fetch(`http://127.0.0.1:${testPort}/v1/memory/rollup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: "rest-session-1" }),
+    });
+    expect(rollRes.status).toBe(200);
+    const rollData = (await rollRes.json()) as any;
+    expect(rollData.success).toBe(true);
+    expect(rollData.rolled_up_count).toBeGreaterThanOrEqual(2);
+    expect(rollData.macro_memory_id).toBeTruthy();
+
+    // 3. Route endpoint
+    const routeRes = await fetch(`http://127.0.0.1:${testPort}/v1/memory/route`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "don't use eval in JavaScript" }),
+    });
+    expect(routeRes.status).toBe(200);
+    const routeData = (await routeRes.json()) as any;
+    expect(routeData.success).toBe(true);
+    expect(routeData.intent).toBe("remember_negative");
+  });
+
+  test("REST GET /v1/events (SSE Stream)", async () => {
+    const res = await fetch(`http://127.0.0.1:${testPort}/v1/events`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/event-stream");
+    const text = await res.text();
+    expect(text).toContain("event: connected");
   });
 });

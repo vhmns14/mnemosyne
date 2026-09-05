@@ -17,6 +17,23 @@ function formatBytes(bytes: number): string {
 const db = getDatabase();
 const engine = new MnemosyneEngine(db);
 
+// SOTA 2026: Real-Time Server-Sent Events (SSE) Client Broadcaster
+const sseClients = new Set<ReadableStreamDefaultController>();
+
+engine.onEvent((event) => {
+  if (sseClients.size === 0) return;
+  const encoder = new TextEncoder();
+  const raw = `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+  const bytes = encoder.encode(raw);
+  for (const client of sseClients) {
+    try {
+      client.enqueue(bytes);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+});
+
 let server: any;
 try {
   server = Bun.serve({
@@ -61,8 +78,14 @@ try {
 
     // Security: Optional Bearer/Header token authentication if configured
     const authToken = process.env.MNEMO_AUTH_TOKEN;
-    if (authToken && url.pathname.startsWith("/v1/memory")) {
-      const authHeader = req.headers.get("authorization") || req.headers.get("x-mnemosyne-key");
+    const isPublic =
+      url.pathname === "/health" ||
+      url.pathname === "/v1/health" ||
+      url.pathname === "/" ||
+      url.pathname === "/dashboard";
+
+    if (authToken && url.pathname.startsWith("/v1/") && !isPublic) {
+      const authHeader = req.headers.get("authorization") || req.headers.get("x-mnemosyne-key") || url.searchParams.get("token");
       const expectedBearer = `Bearer ${authToken}`;
       if (authHeader !== expectedBearer && authHeader !== authToken) {
         return Response.json(
@@ -98,6 +121,35 @@ try {
         },
         { headers: corsHeaders }
       );
+    }
+
+    // Real-Time Server-Sent Events (SSE) Stream
+    if (method === "GET" && (url.pathname === "/v1/events" || url.pathname === "/events")) {
+      let streamController: ReadableStreamDefaultController;
+      const stream = new ReadableStream({
+        start(controller) {
+          streamController = controller;
+          sseClients.add(controller);
+          const encoder = new TextEncoder();
+          controller.enqueue(
+            encoder.encode(`event: connected\ndata: ${JSON.stringify({ timestamp: Date.now(), service: "mnemosyne-events" })}\n\n`)
+          );
+        },
+        cancel() {
+          if (streamController) {
+            sseClients.delete(streamController);
+          }
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          "Connection": "keep-alive",
+        },
+      });
     }
 
     // Real-Time System Telemetry & Resource Observability (RAM, CPU, Disk, SQLite)
@@ -528,6 +580,50 @@ try {
       return Response.json({ success: true, events }, { headers: corsHeaders });
     }
 
+    // Memory Diff (Semantic Time-Travel Diff)
+    if (method === "GET" && url.pathname === "/v1/memory/diff") {
+      const targetA = url.searchParams.get("target_a")?.trim() || "";
+      const targetB = url.searchParams.get("target_b")?.trim() || undefined;
+      if (!targetA) {
+        return Response.json({ success: false, error: "Missing query parameter 'target_a'" }, { status: 400, headers: corsHeaders });
+      }
+      try {
+        const diff = engine.diff(targetA, targetB);
+        return Response.json({ success: true, diff }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders });
+      }
+    }
+
+    // Episodic Rollup & Auto-Compaction (POST /v1/memory/rollup, POST /v1/rollup)
+    if (method === "POST" && (url.pathname === "/v1/memory/rollup" || url.pathname === "/v1/rollup")) {
+      try {
+        const body = (await req.json().catch(() => ({}))) || {};
+        const result = await engine.rollup(body);
+        return Response.json({ success: true, ...result }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // Zero-LLM Fast Intent Router (POST /v1/memory/route, POST /v1/route)
+    if (method === "POST" && (url.pathname === "/v1/memory/route" || url.pathname === "/v1/route")) {
+      try {
+        const body = (await req.json().catch(() => ({}))) || {};
+        const prompt = body.prompt || body.query || "";
+        if (!prompt) {
+          return Response.json(
+            { success: false, error: "Missing required 'prompt' or 'query'" },
+            { status: 400, headers: corsHeaders }
+          );
+        }
+        const result = engine.route(prompt);
+        return Response.json({ success: true, ...result }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
     // Pre-Flight Agent Firewall & Shell Interceptor
     if (method === "POST" && url.pathname === "/v1/preflight/check") {
       try {
@@ -582,7 +678,7 @@ try {
       return Response.json({ success: true, count: trajectories.length, trajectories }, { headers: corsHeaders });
     }
 
-    // Anchor Memory to Git
+    // Anchor Memory to Git (Supports symbol-level granularity)
     if (method === "POST" && url.pathname === "/v1/memory/anchor") {
       try {
         const body = (await req.json()) as any;
@@ -592,7 +688,7 @@ try {
             { status: 400, headers: corsHeaders }
           );
         }
-        const anchor = engine.anchorMemory(body.memory_id, body.file_path, body.repo_path);
+        const anchor = engine.anchorMemory(body.memory_id, body.file_path, body.repo_path, body.symbol_name);
         return Response.json({ success: true, anchor }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
@@ -868,7 +964,7 @@ try {
         const result = engine.exportVault(body.target_dir);
         return Response.json({ success: true, ...result }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+        return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders });
       }
     }
 
@@ -878,7 +974,7 @@ try {
         const result = await engine.syncVault(body.target_dir);
         return Response.json({ success: true, ...result }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+        return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders });
       }
     }
 
@@ -919,30 +1015,40 @@ try {
         const subpath = url.pathname.slice("/v1/blocks/".length);
         const isAppend = subpath.endsWith("/append");
         const name = isAppend ? subpath.slice(0, -"/append".length) : subpath;
-        const body = (await req.json()) as any;
+        
+        let body: any;
+        try {
+          body = await req.json();
+        } catch {
+          return Response.json({ success: false, error: "Malformed or missing JSON body" }, { status: 400, headers: corsHeaders });
+        }
 
         if (isAppend) {
-          if (!body.text) {
-            return Response.json({ success: false, error: "Missing 'text'" }, { status: 400, headers: corsHeaders });
+          if (!body || typeof body.text !== "string") {
+            return Response.json({ success: false, error: "Missing or invalid 'text' field" }, { status: 400, headers: corsHeaders });
           }
           const block = engine.appendBlock(name, body.text);
           return Response.json({ success: true, block }, { headers: corsHeaders });
         } else {
-          if (!body.content) {
-            return Response.json({ success: false, error: "Missing 'content'" }, { status: 400, headers: corsHeaders });
+          if (!body || typeof body.content !== "string") {
+            return Response.json({ success: false, error: "Missing or invalid 'content' field" }, { status: 400, headers: corsHeaders });
           }
           const block = engine.setBlock(name, body.content, body.token_limit);
           return Response.json({ success: true, block }, { headers: corsHeaders });
         }
       } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+        return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders });
       }
     }
 
     if (method === "DELETE" && url.pathname.startsWith("/v1/blocks/")) {
-      const name = url.pathname.slice("/v1/blocks/".length);
-      const deleted = engine.deleteBlock(name);
-      return Response.json({ success: deleted }, { headers: corsHeaders });
+      try {
+        const name = url.pathname.slice("/v1/blocks/".length);
+        const deleted = engine.deleteBlock(name);
+        return Response.json({ success: deleted }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders });
+      }
     }
 
     return Response.json(

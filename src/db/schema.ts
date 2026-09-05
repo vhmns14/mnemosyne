@@ -286,6 +286,8 @@ export function initSchema(db: Database): void {
       memory_id TEXT PRIMARY KEY,
       repo_path TEXT NOT NULL,
       file_path TEXT NOT NULL,
+      symbol_name TEXT,
+      symbol_hash TEXT,
       commit_hash TEXT NOT NULL,
       file_mtime INTEGER NOT NULL,
       file_hash TEXT,
@@ -296,7 +298,12 @@ export function initSchema(db: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_git_anchors_status ON memory_git_anchors(status);
     CREATE INDEX IF NOT EXISTS idx_git_anchors_file ON memory_git_anchors(file_path);
+    CREATE INDEX IF NOT EXISTS idx_git_anchors_symbol ON memory_git_anchors(file_path, symbol_name);
   `);
+
+  // Safe incremental migrations for existing databases
+  try { db.exec("ALTER TABLE memory_git_anchors ADD COLUMN symbol_name TEXT;"); } catch {}
+  try { db.exec("ALTER TABLE memory_git_anchors ADD COLUMN symbol_hash TEXT;"); } catch {}
 
   // 14. Multi-Agent Epistemic Blackboard Table
   db.exec(`
