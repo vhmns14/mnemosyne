@@ -58,6 +58,27 @@ export const OPPOSITES: Record<string, string> = {
 };
 
 /**
+ * Predicates that legitimately hold several objects at once ("likes coffee" does
+ * not invalidate "likes spicy food"). Only an identical subject+predicate+object
+ * replaces the old triple for these; single-valued predicates (RUNS_ON,
+ * LISTENS_ON_PORT, DEPLOYS_TO, ...) keep supersede-on-change semantics.
+ */
+export const MULTI_VALUED_PREDICATES: Record<string, true> = {
+  LIKES: true,
+  DISLIKES: true,
+  LOVES: true,
+  HATES: true,
+  PREFERS: true,
+  USES: true,
+  NEEDS: true,
+  REQUIRES: true,
+  KNOWS: true,
+  HAS: true,
+  SUPPORTS: true,
+  WORKS_WITH: true,
+};
+
+/**
  * Tuned rule-based triple extractor: (Subject)-[Predicate]->(Object)
  * Highly optimized for Indonesian and English developer statements.
  */
@@ -65,39 +86,49 @@ export function extractTriples(text: string): Array<{ subject: string; predicate
   const triples: Array<{ subject: string; predicate: string; object: string }> = [];
   const normalized = text.trim();
 
-  // Pattern A: Port listeners: e.g. "Albatross berjalan di Bun port 8787" or "server listens on 8788"
-  const portMatch = normalized.match(/([A-Za-z0-9_\-\.\s]+?)\s+(?:berjalan di|listens on|running on|menggunakan port|port)\s+(?:port\s+)?(\d{2,5})/i);
-  if (portMatch) {
-    triples.push({
-      subject: portMatch[1].trim(),
-      predicate: "LISTENS_ON_PORT",
-      object: portMatch[2].trim(),
-    });
-  }
+  // A sentence may carry several independent facts ("User likes pizza and User
+  // requires 16GB RAM"). Split into clauses first, otherwise one greedy subject/verb
+  // match swallows the remaining facts into a single object.
+  const clauses = normalized
+    .split(/\s*[;!?]\s+|\s*\.\s+|\s+(?:and|dan|serta)\s+/i)
+    .map((c) => c.trim().replace(/[.,;]$/, ""))
+    .filter(Boolean);
 
-  // Pattern B: Declarative verbs (EN + ID)
-  const verbRegex = /([A-Za-z0-9_\-\.\s]+?)\s+(prefers?|likes?|dislikes?|does not like|doesn't like|does not prefer|doesn't prefer|loves?|hates?|uses?|requires?|needs?|builds with|deploys via|deploys to|runs on|is constrained by|suka|benci|tidak suka|gemar|memerlukan|menggunakan|memakai|berjalan di|mendeploy ke|menyimpan data di)\s+([A-Za-z0-9_\-\.\s]+)/i;
-  const match = normalized.match(verbRegex);
-  if (match) {
-    const subject = match[1].trim();
-    const raw_predicate = match[2].trim();
-    let predicate = raw_predicate.toUpperCase().replace(/\s+/g, "_");
-    
-    // Normalize Indonesian & synonym predicates to canonical English predicates
-    if (predicate === "PREFER" || predicate === "PREFERS") predicate = "PREFERS";
-    else if (predicate === "LIKE" || predicate === "LIKES" || predicate === "SUKA" || predicate === "GEMAR" || predicate === "LOVES" || predicate === "LOVE") predicate = "LIKES";
-    else if (predicate === "DISLIKE" || predicate === "DISLIKES" || predicate === "BENCI" || predicate === "TIDAK_SUKA" || predicate === "DOES_NOT_LIKE" || predicate === "DOESNT_LIKE" || predicate === "HATE" || predicate === "HATES") predicate = "DISLIKES";
-    else if (predicate === "DOES_NOT_PREFER" || predicate === "DOESNT_PREFER") predicate = "REJECTS";
-    else if (predicate === "USE" || predicate === "USES" || predicate === "MENGGUNAKAN" || predicate === "MEMAKAI") predicate = "USES";
-    else if (predicate === "BERJALAN_DI") predicate = "RUNS_ON";
-    else if (predicate === "MENDEPLOY_KE") predicate = "DEPLOYS_TO";
-    else if (predicate === "REQUIRE" || predicate === "REQUIRES" || predicate === "MEMERLUKAN") predicate = "REQUIRES";
-    else if (predicate === "NEED" || predicate === "NEEDS") predicate = "NEEDS";
-    else if (predicate === "MENYIMPAN_DATA_DI") predicate = "STORES_DATA_IN";
+  for (const clause of clauses) {
+    // Pattern A: Port listeners: e.g. "Albatross berjalan di Bun port 8787" or "server listens on 8788"
+    const portMatch = clause.match(/([A-Za-z0-9_\-\.\s]+?)\s+(?:berjalan di|listens on|running on|menggunakan port|port)\s+(?:port\s+)?(\d{2,5})/i);
+    if (portMatch) {
+      triples.push({
+        subject: portMatch[1].trim(),
+        predicate: "LISTENS_ON_PORT",
+        object: portMatch[2].trim(),
+      });
+    }
 
-    const object = match[3].trim().replace(/[.,;]$/, "");
-    if (subject && predicate && object) {
-      triples.push({ subject, predicate, object, raw_predicate });
+    // Pattern B: Declarative verbs (EN + ID), object bounded by the clause
+    const verbRegex = /([A-Za-z0-9_\-\.\s]+?)\s+(prefers?|likes?|dislikes?|does not like|doesn't like|does not prefer|doesn't prefer|loves?|hates?|uses?|requires?|needs?|builds with|deploys via|deploys to|runs on|is constrained by|suka|benci|tidak suka|gemar|memerlukan|menggunakan|memakai|berjalan di|mendeploy ke|menyimpan data di)\s+(.+)/i;
+    const match = clause.match(verbRegex);
+    if (match) {
+      const subject = match[1].trim();
+      const raw_predicate = match[2].trim();
+      let predicate = raw_predicate.toUpperCase().replace(/\s+/g, "_");
+
+      // Normalize Indonesian & synonym predicates to canonical English predicates
+      if (predicate === "PREFER" || predicate === "PREFERS") predicate = "PREFERS";
+      else if (predicate === "LIKE" || predicate === "LIKES" || predicate === "SUKA" || predicate === "GEMAR" || predicate === "LOVES" || predicate === "LOVE") predicate = "LIKES";
+      else if (predicate === "DISLIKE" || predicate === "DISLIKES" || predicate === "BENCI" || predicate === "TIDAK_SUKA" || predicate === "DOES_NOT_LIKE" || predicate === "DOESNT_LIKE" || predicate === "HATE" || predicate === "HATES") predicate = "DISLIKES";
+      else if (predicate === "DOES_NOT_PREFER" || predicate === "DOESNT_PREFER") predicate = "REJECTS";
+      else if (predicate === "USE" || predicate === "USES" || predicate === "MENGGUNAKAN" || predicate === "MEMAKAI") predicate = "USES";
+      else if (predicate === "BERJALAN_DI") predicate = "RUNS_ON";
+      else if (predicate === "MENDEPLOY_KE") predicate = "DEPLOYS_TO";
+      else if (predicate === "REQUIRE" || predicate === "REQUIRES" || predicate === "MEMERLUKAN") predicate = "REQUIRES";
+      else if (predicate === "NEED" || predicate === "NEEDS") predicate = "NEEDS";
+      else if (predicate === "MENYIMPAN_DATA_DI") predicate = "STORES_DATA_IN";
+
+      const object = match[3].trim().replace(/[.,;]$/, "");
+      if (subject && predicate && object) {
+        triples.push({ subject, predicate, object, raw_predicate });
+      }
     }
   }
 
@@ -340,7 +371,12 @@ export async function rememberMemory(
         INSERT INTO notes (peer, session_id, role, content, timestamp)
         VALUES (?, ?, ?, ?, ?)
       `).run(peer, sourceSession, options.actor || "user", content, now);
-    } catch {}
+    } catch (err: unknown) {
+      // The delta dreamer reads its input from `notes`; a swallowed failure here
+      // silently stops consolidation. Never hide it — but never lose the memory either.
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[mnemosyne] note log append failed (dreamer delta will miss this input): ${reason}`);
+    }
   }
 
   // 5. Store vector embedding
@@ -392,14 +428,20 @@ export async function rememberMemory(
     }
 
     // B. Dedup by Subject + Predicate: check existing active triple
+    const isMultiValued = MULTI_VALUED_PREDICATES[predicate] === true;
     const existing = db
       .query(
         `SELECT id, memory_id, object FROM entity_triples
          WHERE LOWER(subject) = LOWER(?) AND predicate = ? AND is_active = 1`
       )
-      .all(subject, predicate) as any[];
+      .all(subject, predicate) as Array<{ id: string; memory_id: string | null; object: string }>;
 
     for (const old of existing) {
+      // Multi-valued predicates accumulate: "likes coffee" must not kill "likes pizza".
+      // Only an identical object replaces the stored triple.
+      if (isMultiValued && old.object.trim().toLowerCase() !== object.toLowerCase()) {
+        continue;
+      }
       db.prepare(`UPDATE entity_triples SET is_active = 0, valid_until = ? WHERE id = ?`).run(now, old.id);
       // Also mark older parent memory superseded if not already
       if (old.memory_id && old.memory_id !== id) {

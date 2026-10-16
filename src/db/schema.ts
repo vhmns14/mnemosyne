@@ -296,6 +296,12 @@ export function initSchema(db: Database): void {
   `);
 
   // 13. Git-Anchored Codebase Memories Table
+  // Migrations first: pre-symbol-anchoring databases already have this table without
+  // symbol_name/symbol_hash, so the index below must not run before the columns exist
+  // (a failed CREATE INDEX here used to kill every entrypoint at startup).
+  try { db.exec("ALTER TABLE memory_git_anchors ADD COLUMN symbol_name TEXT;"); } catch {}
+  try { db.exec("ALTER TABLE memory_git_anchors ADD COLUMN symbol_hash TEXT;"); } catch {}
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS memory_git_anchors (
       memory_id TEXT PRIMARY KEY,
@@ -315,10 +321,6 @@ export function initSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_git_anchors_file ON memory_git_anchors(file_path);
     CREATE INDEX IF NOT EXISTS idx_git_anchors_symbol ON memory_git_anchors(file_path, symbol_name);
   `);
-
-  // Safe incremental migrations for existing databases
-  try { db.exec("ALTER TABLE memory_git_anchors ADD COLUMN symbol_name TEXT;"); } catch {}
-  try { db.exec("ALTER TABLE memory_git_anchors ADD COLUMN symbol_hash TEXT;"); } catch {}
 
   // 14. Multi-Agent Epistemic Blackboard Table
   db.exec(`
