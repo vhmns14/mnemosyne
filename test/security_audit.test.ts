@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { initSchema } from "../src/db/schema.ts";
+import { requiresAuth, isAuthorized } from "../src/auth.ts";
 import { MnemosyneEngine } from "../src/engine/index.ts";
 import { validateBlockName, getContextBlock, setContextBlock, deleteContextBlock } from "../src/engine/blocks.ts";
 import { parseFrontmatter, resolveVaultDir, exportVault, importVault } from "../src/engine/vault.ts";
@@ -159,22 +160,11 @@ Safe memory content
   test("7. Server Auth Token Protection & Universal /v1/ Endpoint Enforcement", async () => {
     const SECRET_KEY = "audit-super-secret-token-2026";
 
-    // Simulate Bun server auth middleware logic
+    // Real daemon middleware helpers (src/auth.ts) — no mirrored copy to drift out of sync.
     function checkAuth(pathname: string, headers: Headers): { status: number; allowed: boolean } {
-      const isPublic =
-        pathname === "/health" ||
-        pathname === "/v1/health" ||
-        pathname === "/" ||
-        pathname === "/dashboard";
-
-      if (SECRET_KEY && pathname.startsWith("/v1/") && !isPublic) {
-        const authHeader = headers.get("authorization") || headers.get("x-mnemosyne-key");
-        const expectedBearer = `Bearer ${SECRET_KEY}`;
-        if (authHeader !== expectedBearer && authHeader !== SECRET_KEY) {
-          return { status: 401, allowed: false };
-        }
-      }
-      return { status: 200, allowed: true };
+      const req = new Request(`http://127.0.0.1:8788${pathname}`, { headers });
+      if (!requiresAuth(pathname)) return { status: 200, allowed: true };
+      return isAuthorized(req, SECRET_KEY) ? { status: 200, allowed: true } : { status: 401, allowed: false };
     }
 
     // 1. Public health probe is allowed without auth

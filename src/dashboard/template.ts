@@ -1,3 +1,5 @@
+import { VERSION } from "../config.ts";
+
 export function getDashboardHtml(): string {
   return `<!DOCTYPE html>
 <html lang="en" class="dark">
@@ -753,6 +755,28 @@ export function getDashboardHtml(): string {
 <body>
   <div id="toast-shelf" class="toast-shelf"></div>
 
+  <!-- Daemon Auth Gate: shown when MNEMO_AUTH_TOKEN is set on the daemon -->
+  <div id="auth-gate" class="modal-overlay" style="display:none;">
+    <div class="modal-box" style="width: 420px;">
+      <div class="modal-header">
+        <span>Daemon Authentication Required</span>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:12px; color:var(--text-muted); line-height:1.55; margin-bottom:12px;">
+          This daemon runs with <span style="font-family:var(--mono); color:#fff;">MNEMO_AUTH_TOKEN</span> set.
+          Paste the token to open an HttpOnly session cookie. The token is never written into the URL.
+        </p>
+        <input type="password" id="auth-token-input" class="search-input" style="width:100%; padding:8px 10px;"
+               placeholder="MNEMO_AUTH_TOKEN value"
+               onkeydown="if(event.key==='Enter'){event.preventDefault(); submitAuthToken();}">
+        <div id="auth-error" style="display:none; font-size:12px; color:var(--rose); margin-top:8px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" onclick="submitAuthToken()">Unlock Dashboard</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Command Palette Modal -->
   <div id="cmd-palette" class="modal-overlay" onclick="if(event.target===this) toggleCmdPalette(false)">
     <div class="modal-box">
@@ -829,7 +853,7 @@ export function getDashboardHtml(): string {
       <div class="sidebar-header">
         <div class="logo-badge">M</div>
         <div class="logo-text">Mnemosyne Second Memory</div>
-        <div class="version-tag version-pill">v1.3.6</div>
+        <div class="version-tag version-pill">v${VERSION}</div>
       </div>
 
       <div class="sidebar-section">
@@ -1563,11 +1587,51 @@ export function getDashboardHtml(): string {
     let draggedNode = null;
     let animId = null;
 
+    // Auth: the token is exchanged for an HttpOnly cookie (POST /v1/auth/session),
+    // so no token ever rides in the URL where logs and Referer would capture it.
+    // A 401 anywhere reveals the unlock gate instead of silently breaking the UI.
+    async function apiFetch(url, opts) {
+      const res = await fetch(url, opts);
+      if (res.status === 401) {
+        const gate = document.getElementById('auth-gate');
+        if (gate) gate.style.display = 'flex';
+      }
+      return res;
+    }
+
+    async function submitAuthToken() {
+      const input = document.getElementById('auth-token-input');
+      const errEl = document.getElementById('auth-error');
+      const token = (input && input.value ? input.value : '').trim();
+      if (!token) return;
+
+      try {
+        const res = await fetch('/v1/auth/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: token })
+        });
+        if (!res.ok) {
+          if (errEl) {
+            errEl.innerText = 'Rejected: token does not match this daemon.';
+            errEl.style.display = 'block';
+          }
+          return;
+        }
+        location.reload();
+      } catch (e) {
+        if (errEl) {
+          errEl.innerText = 'Request failed: ' + e.message;
+          errEl.style.display = 'block';
+        }
+      }
+    }
+
     function showToast(msg) {
       const shelf = document.getElementById('toast-shelf');
       const el = document.createElement('div');
       el.className = 'toast-pill';
-      el.innerHTML = '<span style="color:var(--emerald);">✓</span><span>' + msg + '</span>';
+      el.innerHTML = '<span style="color:var(--emerald);">✓</span><span>' + escapeAttr(msg) + '</span>';
       shelf.appendChild(el);
       setTimeout(() => {
         el.style.opacity = '0';
@@ -1665,7 +1729,7 @@ export function getDashboardHtml(): string {
              onmouseover="this.style.background='var(--bg-surface)'" 
              onmouseout="this.style.background='transparent'"
              onclick="COMMANDS[\${idx}].action(); toggleCmdPalette(false);">
-          <span>\${cmd.label}</span>
+          <span>\${escapeAttr(cmd.label)}</span>
           <span class="kbd">↵</span>
         </div>
       \`).join('');
@@ -1787,19 +1851,19 @@ export function getDashboardHtml(): string {
       c.innerHTML = \`
         <div class="prop-group">
           <div class="prop-label">Entity Name</div>
-          <div class="prop-value" style="font-size:14px; font-weight:600; color:#fff;">\${n.id}</div>
+          <div class="prop-value" style="font-size:14px; font-weight:600; color:#fff;">\${escapeAttr(n.id)}</div>
         </div>
         <div class="prop-group">
           <div class="prop-label">Graph Role</div>
-          <div class="prop-value"><span class="tag tag-\${n.type === 'subject' ? 'brand' : 'success'}">\${n.type.toUpperCase()}</span></div>
+          <div class="prop-value"><span class="tag tag-\${n.type === 'subject' ? 'brand' : 'success'}">\${escapeAttr(String(n.type).toUpperCase())}</span></div>
         </div>
         <div class="prop-group">
           <div class="prop-label">Connections (\${relatedLinks.length})</div>
           <div style="display:flex; flex-direction:column; gap:6px; margin-top:4px;">
             \${relatedLinks.map(l => \`
               <div style="background:var(--bg-surface); padding:6px 8px; border-radius:4px; font-size:11.5px; border:1px solid var(--border-subtle);">
-                <div style="color:var(--text-dim); font-size:10px;">\${l.label}</div>
-                <div style="color:#fff; font-family:var(--mono);">\${l.source === n.id ? '→ ' + l.target : '← ' + l.source}</div>
+                <div style="color:var(--text-dim); font-size:10px;">\${escapeAttr(l.label)}</div>
+                <div style="color:#fff; font-family:var(--mono);">\${escapeAttr(l.source === n.id ? '→ ' + l.target : '← ' + l.source)}</div>
               </div>
             \`).join('')}
           </div>
@@ -2111,9 +2175,9 @@ export function getDashboardHtml(): string {
     async function loadStats() {
       try {
         const [gRes, rRes, dRes] = await Promise.all([
-          fetch('/v1/memory/graph?limit=100').then(r => r.json()),
-          fetch('/v1/rules/export?format=agents.md').then(r => r.json()),
-          fetch('/v1/doctor/audit').then(r => r.json())
+          apiFetch('/v1/memory/graph?limit=100').then(r => r.json()),
+          apiFetch('/v1/rules/export?format=agents.md').then(r => r.json()),
+          apiFetch('/v1/doctor/audit').then(r => r.json())
         ]);
 
         if (gRes.success) {
@@ -2189,11 +2253,11 @@ export function getDashboardHtml(): string {
           <tr>
             <td style="font-weight:\${isNeg ? '600' : '400'}; color:\${isNeg ? '#fff' : 'var(--text-main)'};">
               \${isNeg ? '<span style="color:var(--rose); margin-right:6px;">⛔</span>' : ''}
-              \${r.content}
+              \${escapeAttr(r.content)}
             </td>
-            <td><span class="tag tag-\${isNeg ? 'danger' : 'brand'}">\${r.category}</span></td>
-            <td><span class="tag">\${r.scope}</span></td>
-            <td><span class="tag tag-\${r.importance === 'critical' ? 'danger' : 'brand'}">\${r.importance.toUpperCase()}</span></td>
+            <td><span class="tag tag-\${isNeg ? 'danger' : 'brand'}">\${escapeAttr(r.category)}</span></td>
+            <td><span class="tag">\${escapeAttr(r.scope)}</span></td>
+            <td><span class="tag tag-\${r.importance === 'critical' ? 'danger' : 'brand'}">\${escapeAttr(String(r.importance).toUpperCase())}</span></td>
           </tr>
         \`;
       }).join('');
@@ -2208,12 +2272,12 @@ export function getDashboardHtml(): string {
       }
       tbody.innerHTML = all.map(r => \`
         <tr>
-          <td>\${r.content}</td>
-          <td><span class="tag">\${r.category}</span></td>
-          <td><span class="tag">\${r.scope}</span></td>
+          <td>\${escapeAttr(r.content)}</td>
+          <td><span class="tag">\${escapeAttr(r.category)}</span></td>
+          <td><span class="tag">\${escapeAttr(r.scope)}</span></td>
           <td style="font-family:var(--mono);">\${r.access_count || 0}</td>
           <td>
-            <button class="btn btn-danger" style="padding:2px 6px; font-size:11px;" onclick="forgetMemory('\${r.id}')">Deactivate</button>
+            <button class="btn btn-danger" style="padding:2px 6px; font-size:11px;" data-id="\${escapeAttr(r.id)}" onclick="forgetMemory(this.dataset.id)">Deactivate</button>
           </td>
         </tr>
       \`).join('');
@@ -2247,7 +2311,7 @@ export function getDashboardHtml(): string {
 
     async function executeDoctorRepair() {
       try {
-        const res = await fetch('/v1/doctor/repair', { method: 'POST' }).then(r => r.json());
+        const res = await apiFetch('/v1/doctor/repair', { method: 'POST' }).then(r => r.json());
         if (res.success) {
           showToast('Context Doctor surgical repair completed.');
           loadStats();
@@ -2269,7 +2333,7 @@ export function getDashboardHtml(): string {
 
       const start = performance.now();
       try {
-        const res = await fetch('/v1/memory/recall', {
+        const res = await apiFetch('/v1/memory/recall', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: q, limit: 5 })
@@ -2290,13 +2354,13 @@ export function getDashboardHtml(): string {
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                 <div style="display:flex; gap:6px; align-items:center;">
                   <span class="tag tag-brand">Score: \${(m.score * 100).toFixed(1)}%</span>
-                  <span class="tag">\${m.category}</span>
-                  <span class="tag">\${m.scope}</span>
+                  <span class="tag">\${escapeAttr(m.category)}</span>
+                  <span class="tag">\${escapeAttr(m.scope)}</span>
                   \${isNeg ? '<span class="tag tag-danger">P0 GUARDRAIL</span>' : ''}
                 </div>
-                <button class="btn btn-danger" style="padding:2px 6px; font-size:10.5px;" onclick="forgetMemory('\${m.id}')">Forget</button>
+                <button class="btn btn-danger" style="padding:2px 6px; font-size:10.5px;" data-id="\${escapeAttr(m.id)}" onclick="forgetMemory(this.dataset.id)">Forget</button>
               </div>
-              <div style="color:var(--text-main); font-size:13px; line-height:1.5;">\${m.content}</div>
+              <div style="color:var(--text-main); font-size:13px; line-height:1.5;">\${escapeAttr(m.content)}</div>
             </div>
           \`;
         }).join('');
@@ -2308,7 +2372,7 @@ export function getDashboardHtml(): string {
     async function forgetMemory(id) {
       if (!confirm('Mark memory as deactivated?')) return;
       try {
-        const res = await fetch('/v1/memory/' + encodeURIComponent(id), { method: 'DELETE' }).then(r => r.json());
+        const res = await apiFetch('/v1/memory/' + encodeURIComponent(id), { method: 'DELETE' }).then(r => r.json());
         if (res.success) {
           showToast('Memory deactivated.');
           loadStats();
@@ -2336,7 +2400,7 @@ export function getDashboardHtml(): string {
       }
 
       try {
-        const res = await fetch('/v1/memory/remember', {
+        const res = await apiFetch('/v1/memory/remember', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content, scope, category, importance, entities })
@@ -2356,7 +2420,7 @@ export function getDashboardHtml(): string {
     async function syncRules(format) {
       const target = format === 'cursorrules' ? '.cursorrules' : 'AGENTS.md';
       try {
-        const res = await fetch('/v1/rules/sync', {
+        const res = await apiFetch('/v1/rules/sync', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ targetPath: target, format })
@@ -2371,7 +2435,7 @@ export function getDashboardHtml(): string {
     }
 
     function copyRules() {
-      fetch('/v1/rules/export?format=agents.md')
+      apiFetch('/v1/rules/export?format=agents.md')
         .then(r => r.json())
         .then(res => {
           if (res.content) {
@@ -2384,38 +2448,38 @@ export function getDashboardHtml(): string {
     async function loadPersona() {
       const c = document.getElementById('persona-pane');
       try {
-        const res = await fetch('/v1/memory/profile?entity_type=user').then(r => r.json());
+        const res = await apiFetch('/v1/memory/profile?entity_type=user').then(r => r.json());
         if (res.success && res.profile) {
           const p = res.profile;
           c.innerHTML = \`
             <div style="background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:8px; padding:18px; margin-bottom:14px; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">
               <div class="prop-label" style="color:var(--brand); margin-bottom:6px;">Worldview</div>
-              <div style="color:var(--text-main); font-size:13px; line-height:1.6;">\${p.worldview}</div>
+              <div style="color:var(--text-main); font-size:13px; line-height:1.6;">\${escapeAttr(p.worldview)}</div>
             </div>
             <div style="background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:8px; padding:18px; margin-bottom:14px; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">
               <div class="prop-label" style="color:var(--rose); margin-bottom:8px;">Hardware & Operational Constraints</div>
               <div style="display:flex; flex-direction:column; gap:8px;">
                 \${p.hard_constraints.map(h => \`
                   <div style="background:rgba(244,63,94,0.06); border:1px solid rgba(244,63,94,0.2); border-left:3px solid var(--rose); padding:9px 12px; border-radius:4px; font-size:12px; color:#fecdd3;">
-                    \${h}
+                    \${escapeAttr(h)}
                   </div>
                 \`).join('')}
               </div>
             </div>
             <div style="background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:8px; padding:18px; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">
               <div class="prop-label" style="color:var(--emerald); margin-bottom:6px;">Preferred Tooling Stack</div>
-              <pre style="margin-top:6px;">\${JSON.stringify(p.preferences, null, 2)}</pre>
+              <pre style="margin-top:6px;">\${escapeAttr(JSON.stringify(p.preferences, null, 2))}</pre>
             </div>
           \`;
         }
       } catch (e) {
-        c.innerHTML = '<div style="color:var(--rose);">Failed loading profile: ' + e.message + '</div>';
+        c.innerHTML = '<div style="color:var(--rose);">Failed loading profile: ' + escapeAttr(e.message) + '</div>';
       }
     }
 
     async function loadDigest() {
       try {
-        const res = await fetch('/v1/digest').then(r => r.json());
+        const res = await apiFetch('/v1/digest').then(r => r.json());
         if (res.success) {
           document.getElementById('digest-report').innerText = res.digest.markdown_report;
         }
@@ -2426,7 +2490,7 @@ export function getDashboardHtml(): string {
 
     async function loadTelemetry() {
       try {
-        const res = await fetch('/v1/system/metrics').then(r => r.json());
+        const res = await apiFetch('/v1/system/metrics').then(r => r.json());
         if (!res.success) return;
 
         // Topbar micro pills
@@ -2515,9 +2579,9 @@ export function getDashboardHtml(): string {
       }
     }
 
-    // Helper to escape HTML attributes
+    // Helper to escape HTML text and attributes (values are coerced, never trusted)
     function escapeAttr(str) {
-      return (str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return String(str ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
     // 1. Semantic Drift Radar
@@ -2538,14 +2602,14 @@ export function getDashboardHtml(): string {
       resultBox.innerHTML = '<div style="color:var(--text-dim); font-size:12.5px;">Scanning vector space and negative constraints...</div>';
 
       try {
-        const res = await fetch('/v1/memory/drift', {
+        const res = await apiFetch('/v1/memory/drift', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ statement: statement, threshold: threshold })
         }).then(r => r.json());
 
         if (!res.success) {
-          resultBox.innerHTML = '<div style="color:var(--rose);">Error: ' + (res.error || 'Evaluation failed') + '</div>';
+          resultBox.innerHTML = '<div style="color:var(--rose);">Error: ' + escapeAttr(res.error || 'Evaluation failed') + '</div>';
           return;
         }
 
@@ -2574,9 +2638,9 @@ export function getDashboardHtml(): string {
         if (isDrift) {
           html += '  <div style="background:rgba(244,63,94,0.08); border:1px solid rgba(244,63,94,0.25); border-left:3px solid var(--rose); border-radius:6px; padding:12px; margin-bottom:10px;">';
           html += '    <div style="font-size:11px; font-weight:600; color:#fecdd3; margin-bottom:4px;">VIOLATION EXPLANATION:</div>';
-          html += '    <div style="font-size:12.5px; color:#fff; line-height:1.4;">' + (d.explanation || 'Action conflicts with registered negative constraint.') + '</div>';
+          html += '    <div style="font-size:12.5px; color:#fff; line-height:1.4;">' + escapeAttr(d.explanation || 'Action conflicts with registered negative constraint.') + '</div>';
           if (d.conflicting_memory_id) {
-            html += '    <div style="font-family:var(--mono); font-size:11px; color:var(--text-dim); margin-top:6px;">Conflicting ID: ' + d.conflicting_memory_id + '</div>';
+            html += '    <div style="font-family:var(--mono); font-size:11px; color:var(--text-dim); margin-top:6px;">Conflicting ID: ' + escapeAttr(d.conflicting_memory_id) + '</div>';
           }
           html += '  </div>';
         } else {
@@ -2589,7 +2653,7 @@ export function getDashboardHtml(): string {
 
         resultBox.innerHTML = html;
       } catch (e) {
-        resultBox.innerHTML = '<div style="color:var(--rose);">Request failed: ' + e.message + '</div>';
+        resultBox.innerHTML = '<div style="color:var(--rose);">Request failed: ' + escapeAttr(e.message) + '</div>';
       }
     }
 
@@ -2610,7 +2674,7 @@ export function getDashboardHtml(): string {
       if (outPre) outPre.innerText = 'Compacting context with knapsack greedy selector...';
 
       try {
-        const res = await fetch('/v1/context/compact', {
+        const res = await apiFetch('/v1/context/compact', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: query, max_tokens: budget })
@@ -2645,13 +2709,13 @@ export function getDashboardHtml(): string {
     async function loadRemediations() {
       const c = document.getElementById('remediations-container');
       try {
-        const res = await fetch('/v1/remediations').then(r => r.json());
+        const res = await apiFetch('/v1/remediations').then(r => r.json());
         if (res.success) {
           allPlaybooks = res.playbooks || [];
           renderPlaybooks(allPlaybooks);
         }
       } catch (e) {
-        if (c) c.innerHTML = '<div style="color:var(--rose);">Failed loading playbooks: ' + e.message + '</div>';
+        if (c) c.innerHTML = '<div style="color:var(--rose);">Failed loading playbooks: ' + escapeAttr(e.message) + '</div>';
       }
     }
 
@@ -2665,7 +2729,7 @@ export function getDashboardHtml(): string {
       }
 
       try {
-        const res = await fetch('/v1/remediations/match', {
+        const res = await apiFetch('/v1/remediations/match', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: query })
@@ -2705,16 +2769,16 @@ export function getDashboardHtml(): string {
         html += '<div class="card-surface">';
         html += '  <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">';
         html += '    <div style="display:flex; align-items:center; gap:8px;">';
-        html += '      <span class="tag tag-brand" style="font-family:var(--mono); font-size:12px;">Pattern: ' + (p.symptom_pattern || p.id) + '</span>';
+        html += '      <span class="tag tag-brand" style="font-family:var(--mono); font-size:12px;">Pattern: ' + escapeAttr(p.symptom_pattern || p.id) + '</span>';
         html += '      <span class="tag tag-success">✓ ' + (p.success_count || 1) + 'x Resolved</span>';
-        html += '      <span class="tag">' + (p.scope || 'global') + '</span>';
+        html += '      <span class="tag">' + escapeAttr(p.scope || 'global') + '</span>';
         html += '    </div>';
         html += '    <span style="font-family:var(--mono); font-size:11px; color:var(--text-dim);">' + (p.created_at ? new Date(p.created_at).toLocaleDateString() : '') + '</span>';
         html += '  </div>';
 
         html += '  <div style="margin-bottom:12px;">';
         html += '    <div class="prop-label" style="color:var(--rose); margin-bottom:4px;">DIAGNOSED ROOT CAUSE</div>';
-        html += '    <div style="font-size:13px; color:var(--text-main); line-height:1.5;">' + (p.root_cause || '-') + '</div>';
+        html += '    <div style="font-size:13px; color:var(--text-main); line-height:1.5;">' + escapeAttr(p.root_cause || '-') + '</div>';
         html += '  </div>';
 
         html += '  <div>';
@@ -2751,7 +2815,7 @@ export function getDashboardHtml(): string {
       if (c) c.innerHTML = '<div style="color:var(--text-dim); padding:20px;">Clustering memories with threshold ' + thresh + '...</div>';
 
       try {
-        const res = await fetch('/v1/memory/clusters?threshold=' + thresh).then(r => r.json());
+        const res = await apiFetch('/v1/memory/clusters?threshold=' + thresh).then(r => r.json());
         if (!res.success) {
           if (c) c.innerHTML = '<div style="color:var(--rose);">Error loading clusters</div>';
           return;
@@ -2784,7 +2848,7 @@ export function getDashboardHtml(): string {
           html += '    <div class="prop-label" style="margin-bottom:4px;">MEMBER MEMORY IDS</div>';
           html += '    <div style="display:flex; flex-direction:column; gap:4px;">';
           (cl.memory_ids || []).slice(0, 5).forEach(mid => {
-            html += '      <div style="font-family:var(--mono); font-size:11px; color:var(--text-dim); background:#06070a; border:1px solid var(--border-subtle); padding:4px 8px; border-radius:4px;">' + mid + '</div>';
+            html += '      <div style="font-family:var(--mono); font-size:11px; color:var(--text-dim); background:#06070a; border:1px solid var(--border-subtle); padding:4px 8px; border-radius:4px;">' + escapeAttr(mid) + '</div>';
           });
           if (cl.memory_ids.length > 5) {
             html += '      <div style="font-size:10.5px; color:var(--text-dim); padding:2px 4px;">+ ' + (cl.memory_ids.length - 5) + ' more memories</div>';
@@ -2796,7 +2860,7 @@ export function getDashboardHtml(): string {
 
         if (c) c.innerHTML = html;
       } catch (e) {
-        if (c) c.innerHTML = '<div style="color:var(--rose);">Failed loading clusters: ' + e.message + '</div>';
+        if (c) c.innerHTML = '<div style="color:var(--rose);">Failed loading clusters: ' + escapeAttr(e.message) + '</div>';
       }
     }
 
@@ -2810,7 +2874,7 @@ export function getDashboardHtml(): string {
 
       try {
         const q = target ? encodeURIComponent(target) : 'all';
-        const res = await fetch('/v1/memory/timeline?target=' + q).then(r => r.json());
+        const res = await apiFetch('/v1/memory/timeline?target=' + q).then(r => r.json());
         if (!res.success) {
           if (c) c.innerHTML = '<div style="color:var(--rose);">Error loading timeline</div>';
           return;
@@ -2819,7 +2883,7 @@ export function getDashboardHtml(): string {
         allTimelineEvents = res.events || [];
         filterTimelineByType(document.getElementById('timeline-type-filter')?.value || 'ALL');
       } catch (e) {
-        if (c) c.innerHTML = '<div style="color:var(--rose);">Request error: ' + e.message + '</div>';
+        if (c) c.innerHTML = '<div style="color:var(--rose);">Request error: ' + escapeAttr(e.message) + '</div>';
       }
     }
 
@@ -2848,8 +2912,8 @@ export function getDashboardHtml(): string {
         html += '<div class="card-surface" style="border-left:3px solid ' + borderColor + '; padding:14px;">';
         html += '  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
         html += '    <div style="display:flex; align-items:center; gap:8px;">';
-        html += '      <span class="tag ' + badgeClass + '" style="font-weight:700;">' + typeUpper + '</span>';
-        html += '      <span style="font-family:var(--mono); font-size:11px; color:var(--text-dim);">ID: ' + (ev.memory_id || ev.id) + '</span>';
+        html += '      <span class="tag ' + badgeClass + '" style="font-weight:700;">' + escapeAttr(typeUpper) + '</span>';
+        html += '      <span style="font-family:var(--mono); font-size:11px; color:var(--text-dim);">ID: ' + escapeAttr(ev.memory_id || ev.id) + '</span>';
         html += '    </div>';
         html += '    <span style="font-family:var(--mono); font-size:11px; color:var(--text-dim);">' + dateStr + '</span>';
         html += '  </div>';
@@ -2876,7 +2940,7 @@ export function getDashboardHtml(): string {
       if (audit) audit.innerText = 'Exporting memory pack for scope: ' + scope + '...';
 
       try {
-        const res = await fetch('/v1/memory/pack/export?scope=' + scope).then(r => r.json());
+        const res = await apiFetch('/v1/memory/pack/export?scope=' + scope).then(r => r.json());
         if (!res.success || !res.pack) {
           if (audit) audit.innerText = 'Export failed: ' + (res.error || 'Unknown error');
           return;
@@ -2942,7 +3006,7 @@ export function getDashboardHtml(): string {
           return;
         }
 
-        const res = await fetch('/v1/memory/pack/import', {
+        const res = await apiFetch('/v1/memory/pack/import', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ pack: parsed })

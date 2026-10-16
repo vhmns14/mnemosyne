@@ -1,6 +1,7 @@
 import os from "node:os";
 import fs from "node:fs";
-import { CONFIG } from "./config.ts";
+import { CONFIG, VERSION } from "./config.ts";
+import { requiresAuth, isAuthorized, sessionCookie, clearSessionCookie } from "./auth.ts";
 import { getDatabase, closeDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
 import { getDashboardHtml } from "./dashboard/template.ts";
@@ -76,23 +77,37 @@ try {
       }
     }
 
-    // Security: Optional Bearer/Header token authentication if configured
+    // Security: Optional Bearer/Header/Cookie token authentication if configured.
+    // Query-string tokens are not accepted (they leak via logs and Referer).
     const authToken = process.env.MNEMO_AUTH_TOKEN;
-    const isPublic =
-      url.pathname === "/health" ||
-      url.pathname === "/v1/health" ||
-      url.pathname === "/" ||
-      url.pathname === "/dashboard";
 
-    if (authToken && url.pathname.startsWith("/v1/") && !isPublic) {
-      const authHeader = req.headers.get("authorization") || req.headers.get("x-mnemosyne-key") || url.searchParams.get("token");
-      const expectedBearer = `Bearer ${authToken}`;
-      if (authHeader !== expectedBearer && authHeader !== authToken) {
+    if (authToken && requiresAuth(url.pathname) && !isAuthorized(req, authToken)) {
+      return Response.json(
+        { success: false, error: "Unauthorized: Invalid or missing authentication token." },
+        { status: 401, headers: corsHeaders }
+      );
+    }
+
+    // Session handshake: exchange the token for an HttpOnly cookie so the dashboard and
+    // header-less clients (EventSource) authenticate without a token in the URL.
+    if (method === "POST" && url.pathname === "/v1/auth/session") {
+      const raw: unknown = await req.json().catch(() => null);
+      const provided = raw && typeof raw === "object" && "token" in raw && typeof raw.token === "string" ? raw.token : "";
+
+      if (!authToken || provided !== authToken) {
         return Response.json(
-          { success: false, error: "Unauthorized: Invalid or missing authentication token." },
+          { success: false, error: "Unauthorized: token does not match this daemon." },
           { status: 401, headers: corsHeaders }
         );
       }
+      return Response.json(
+        { success: true, service: "mnemosyne-memory", version: VERSION },
+        { headers: { ...corsHeaders, "Set-Cookie": sessionCookie(authToken) } }
+      );
+    }
+
+    if (method === "DELETE" && url.pathname === "/v1/auth/session") {
+      return Response.json({ success: true }, { headers: { ...corsHeaders, "Set-Cookie": clearSessionCookie() } });
     }
 
     // Dashboard HTML UI (zero dependency single-page app)
@@ -115,7 +130,7 @@ try {
         {
           status: "ok",
           service: "mnemosyne-memory",
-          version: "1.2.0",
+          version: VERSION,
           db_path: CONFIG.DB_PATH,
           weights: CONFIG.WEIGHTS,
         },

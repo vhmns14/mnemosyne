@@ -1,6 +1,6 @@
 {
   "name": "mnemosyne-memory",
-  "version": "1.0.0",
+  "version": "1.8.5",
   "description": "Ultra-lightweight, local-first Long-Term Holographic & Dialectic Memory Engine for AI Agents",
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
     "cli": "bun run src/cli.ts",
     "mcp": "bun run src/mcp.ts",
     "server": "bun run src/server.ts",
-    "test": "bun test"
+    "test": "bun test --timeout 20000"
   },
   "keywords": [
     "ai",

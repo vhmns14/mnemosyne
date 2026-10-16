@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { VERSION } from "./config.ts";
 import { getDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
@@ -557,7 +558,7 @@ async function handleMessage(line: string) {
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "mnemosyne-memory", version: "1.1.0" }
+        serverInfo: { name: "mnemosyne-memory", version: VERSION }
       }
     });
     return;

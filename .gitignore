@@ -39,3 +39,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Agent harness session state
+.pi-glla/

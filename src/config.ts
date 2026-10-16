@@ -1,6 +1,13 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
+import pkg from "../package.json";
+
+/**
+ * Single source of truth for the engine version (package.json).
+ * Used by the REST /health probe, the MCP initialize handshake and the dashboard.
+ */
+export const VERSION: string = pkg.version;
 
 // Resolve default database directory ~/.mnemosyne/
 let defaultDir = join(homedir(), ".mnemosyne");
