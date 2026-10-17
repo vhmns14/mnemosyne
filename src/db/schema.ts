@@ -437,5 +437,72 @@ export function initSchema(db: Database): void {
       updated_at INTEGER NOT NULL
     );
   `);
+
+  // 22. Session Lifecycle (agent working sessions: goal, summary, counters)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      name TEXT,
+      goal TEXT NOT NULL DEFAULT '',
+      cwd TEXT,
+      project TEXT,
+      peer TEXT NOT NULL DEFAULT 'user',
+      model TEXT,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'ended', 'abandoned')),
+      summary TEXT,
+      outcome TEXT NOT NULL DEFAULT 'neutral' CHECK(outcome IN ('success', 'failure', 'neutral')),
+      memory_writes INTEGER NOT NULL DEFAULT 0,
+      recall_count INTEGER NOT NULL DEFAULT 0,
+      rollup_memory_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status, started_at);
+    CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
+  `);
+
+  // 23. Memory Usage Feedback (helped / misled verdicts + recall counters)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_usage (
+      memory_id TEXT PRIMARY KEY,
+      recalled INTEGER NOT NULL DEFAULT 0,
+      helped INTEGER NOT NULL DEFAULT 0,
+      misled INTEGER NOT NULL DEFAULT 0,
+      last_used_at INTEGER NOT NULL,
+      note TEXT,
+      FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+    );
+  `);
+
+  // 24. Cross-Project Provenance (which project actually used a memory)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_project_hits (
+      memory_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      hits INTEGER NOT NULL DEFAULT 1,
+      last_seen_at INTEGER NOT NULL,
+      PRIMARY KEY (memory_id, project),
+      FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_hits_memory ON memory_project_hits(memory_id, hits);
+  `);
+
+  // 25. Memory Candidates (ingest tap -> review queue -> promoted fact)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_candidates (
+      id TEXT PRIMARY KEY,
+      session_id TEXT,
+      content TEXT NOT NULL,
+      triples TEXT NOT NULL DEFAULT '[]',
+      confidence REAL NOT NULL DEFAULT 0.0,
+      source TEXT NOT NULL DEFAULT 'ingest',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'promoted', 'rejected')),
+      promoted_memory_id TEXT,
+      created_at INTEGER NOT NULL,
+      decided_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_candidates_status ON memory_candidates(status, created_at);
+  `);
 }
+
 

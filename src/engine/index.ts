@@ -31,6 +31,26 @@ import { exportVault, importVault, syncVault } from "./vault.ts";
 import { runLongMemEval } from "./benchmark.ts";
 import { detectAndSummarizeCommunities, getCommunitySummaries } from "./community.ts";
 import { getContextBlock, setContextBlock, appendContextBlock, listContextBlocks, deleteContextBlock } from "./blocks.ts";
+import {
+  getActiveSessionId,
+  getActiveSession,
+  getSessionBrief,
+  listSessions,
+  startSession,
+  endSession,
+  touchSession,
+} from "./session.ts";
+import {
+  getMemoryUsage,
+  promoteMemory,
+  rateMemory,
+  recordRecallUsage,
+  suggestPromotions,
+} from "./feedback.ts";
+import { listCandidates, promoteCandidate, rejectCandidate, stageCandidates } from "./candidates.ts";
+import { explainBelief } from "./explain.ts";
+import { redactSecrets } from "./redact.ts";
+import { detectConflicts } from "./dialectic.ts";
 import { diffMemories } from "./diff.ts";
 import { compactContextAdaptive, getModelBudgetProfile } from "./compactor.ts";
 import { rollupSessionMemories } from "./rollup.ts";
@@ -60,7 +80,11 @@ import type {
   LongMemEvalReport, LongMemEvalCase, CommunitySummaryRecord, ContextBlockRecord,
   MemoryDiffResult, ModelBudgetProfile, DisputeArbitrationResult,
   RollupOptions, RollupResult, RouteIntentType, RouteResult,
-  MemoryEventType, MemoryEventMessage
+  MemoryEventType, MemoryEventMessage,
+  SessionRecord, SessionStartOptions, SessionEndOptions, SessionEndResult, SessionBrief,
+  MemoryUsage, UsageVerdict, PromotionSuggestion, MemoryCandidate, ConflictReport,
+  BeliefExplanation, RedactionResult,
+  MemoryScope
 } from "../types.ts";
 
 
@@ -145,6 +169,10 @@ export class MnemosyneEngine {
     // 5. Record co-occurrence between activated memories
     const recalledIds = memories.map((m) => m.id);
     recordCoOccurrence(this.db, recalledIds);
+
+    // 5b. Usage counters + cross-project provenance (F2/F4)
+    recordRecallUsage(this.db, recalledIds, getActiveSession(this.db)?.project ?? null);
+    touchSession(this.db, "recall");
 
     // 6. Check if query matches known error symptoms for automated remediation playbooks (Reflexion)
     let matchingRemediations = findRemediation(this.db, options.query);
@@ -673,12 +701,107 @@ export class MnemosyneEngine {
   }
 
   /**
-   * Hermes Ingestion Protocol (POST /ingest): appends to raw notes and promotes facts.
+   * Hermes Ingestion Protocol (POST /ingest): appends to raw notes, promotes facts,
+   * and stages deterministic candidates so turns become memory without the model asking.
    */
   async ingest(options: IngestOptions): Promise<IngestResult> {
     const res = await ingestMessageOrFact(this.db, options);
     if (res.memory_id) this.l1Cache.invalidate(res.memory_id);
+
+    const sessionId = options.session_id || getActiveSessionId(this.db);
+    res.candidates = await stageCandidates(this.db, options.content, {
+      session_id: sessionId,
+      peer: options.peer,
+      source: "ingest",
+    });
+
     return res;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * F1 — Session lifecycle
+   * ------------------------------------------------------------------ */
+
+  startSession(options: SessionStartOptions = {}): SessionRecord {
+    return startSession(this.db, options);
+  }
+
+  async endSession(options: SessionEndOptions = {}): Promise<SessionEndResult> {
+    const result = await endSession(this.db, options);
+    this.l1Cache.clear();
+    this.emitEvent("ROLLUP_COMPLETED", { session_id: result.session.id, rolled_up: result.rolled_up });
+    return result;
+  }
+
+  sessions(limit: number = 10): SessionRecord[] {
+    return listSessions(this.db, limit);
+  }
+
+  activeSession(): SessionRecord | null {
+    return getActiveSession(this.db);
+  }
+
+  sessionBrief(workspacePath?: string): SessionBrief {
+    return getSessionBrief(this.db, { workspacePath });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * F2 / F4 — Usage feedback & cross-project promotion
+   * ------------------------------------------------------------------ */
+
+  rate(memoryId: string, verdict: UsageVerdict, note?: string): MemoryUsage | null {
+    const usage = rateMemory(this.db, memoryId, verdict, note, getActiveSession(this.db)?.project ?? null);
+    if (usage) this.l1Cache.invalidate(memoryId);
+    return usage;
+  }
+
+  usage(memoryId: string): MemoryUsage | null {
+    return getMemoryUsage(this.db, memoryId);
+  }
+
+  promotions(minProjects: number = 3): PromotionSuggestion[] {
+    return suggestPromotions(this.db, minProjects);
+  }
+
+  promote(memoryId: string, to: MemoryScope = "global"): boolean {
+    const changed = promoteMemory(this.db, memoryId, to);
+    if (changed) this.l1Cache.invalidate(memoryId);
+    return changed;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * F3 — Candidate queue
+   * ------------------------------------------------------------------ */
+
+  candidates(status: string = "pending", limit: number = 20): MemoryCandidate[] {
+    return listCandidates(this.db, status, limit);
+  }
+
+  async promoteCandidate(candidateId: string): Promise<string | null> {
+    return promoteCandidate(this.db, candidateId);
+  }
+
+  rejectCandidate(candidateId: string): boolean {
+    return rejectCandidate(this.db, candidateId);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * F5 / F6 / F7 — Conflicts, explanation, redaction
+   * ------------------------------------------------------------------ */
+
+  async conflicts(
+    content: string,
+    options: { entities?: Array<{ subject: string; predicate: string; object: string }>; scope?: MemoryScope; category?: MemoryCategory } = {}
+  ): Promise<ConflictReport[]> {
+    return detectConflicts(this.db, { content, ...options });
+  }
+
+  async why(claim: string, options: { limit?: number; min_score?: number } = {}): Promise<BeliefExplanation> {
+    return explainBelief(this.db, claim, options);
+  }
+
+  scrub(text: string): RedactionResult {
+    return redactSecrets(text);
   }
 
   /**

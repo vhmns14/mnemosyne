@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { CONFIG } from "../config.ts";
 import { cosineSimilarity, decodeVector, getEmbedding, STOPWORDS } from "./embedder.ts";
 import { sweepExpiredFacts } from "./dialectic.ts";
+import { getUsageMap, usageMultiplier } from "./feedback.ts";
 import type { MemoryRecord, RecallOptions, ScoredMemory } from "../types.ts";
 
 import * as os from "node:os";
@@ -254,7 +255,17 @@ export async function searchHybrid(
     });
   }
 
-  // 6. Sort and apply minRelevance filter
+  // 6. Usage feedback penalty (F2): a memory that misled before ranks lower,
+  // one that helped ranks higher — the loop that keeps retrieval sharpening.
+  if (scoredMemories.length > 0) {
+    const usageMap = getUsageMap(db, scoredMemories.map((m) => m.id));
+    for (const mem of scoredMemories) {
+      const multiplier = usageMultiplier(usageMap.get(mem.id));
+      if (multiplier !== 1) mem.score = Math.min(1.0, Math.max(0.0, mem.score * multiplier));
+    }
+  }
+
+  // 7. Sort and apply minRelevance filter
   scoredMemories.sort((a, b) => b.score - a.score);
   return scoredMemories.filter((m) => m.score >= minRelevance).slice(0, limit);
 }

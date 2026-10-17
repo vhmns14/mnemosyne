@@ -315,6 +315,106 @@ try {
       }
     }
 
+    // ---- Session lifecycle (F1) ----
+    if (method === "POST" && url.pathname === "/v1/session/start") {
+      const body = await req.json().catch(() => ({}));
+      const session = engine.startSession(body || {});
+      return Response.json({ success: true, session }, { headers: corsHeaders });
+    }
+
+    if (method === "POST" && url.pathname === "/v1/session/end") {
+      const body = await req.json().catch(() => ({}));
+      try {
+        const result = await engine.endSession(body || {});
+        return Response.json({ success: true, ...result }, { headers: corsHeaders });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Unable to end session";
+        return Response.json({ success: false, error: message }, { status: 400, headers: corsHeaders });
+      }
+    }
+
+    if (method === "GET" && url.pathname === "/v1/session/brief") {
+      const brief = engine.sessionBrief(url.searchParams.get("workspace") || undefined);
+      return Response.json({ success: true, brief }, { headers: corsHeaders });
+    }
+
+    if (method === "GET" && (url.pathname === "/v1/sessions" || url.pathname === "/v1/session")) {
+      const limit = parseInt(url.searchParams.get("limit") || "10", 10);
+      return Response.json(
+        { success: true, sessions: engine.sessions(limit), active: engine.activeSession() },
+        { headers: corsHeaders }
+      );
+    }
+
+    // ---- Usage feedback & promotion (F2 / F4) ----
+    if (method === "POST" && url.pathname === "/v1/memory/feedback") {
+      const body = await req.json().catch(() => ({}));
+      const verdict = body?.verdict === "misled" ? "misled" : body?.verdict === "helped" ? "helped" : null;
+      if (!body?.memory_id || !verdict) {
+        return Response.json(
+          { success: false, error: "Requires 'memory_id' and 'verdict' ('helped' | 'misled')" },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+      const usage = engine.rate(body.memory_id, verdict, body.note);
+      return Response.json({ success: Boolean(usage), usage }, { headers: corsHeaders });
+    }
+
+    if (method === "GET" && url.pathname === "/v1/memory/promotions") {
+      const minProjects = parseInt(url.searchParams.get("min_projects") || "3", 10);
+      return Response.json({ success: true, promotions: engine.promotions(minProjects) }, { headers: corsHeaders });
+    }
+
+    if (method === "POST" && url.pathname === "/v1/memory/promote") {
+      const body = await req.json().catch(() => ({}));
+      if (!body?.memory_id) {
+        return Response.json({ success: false, error: "Missing 'memory_id'" }, { status: 400, headers: corsHeaders });
+      }
+      const promoted = engine.promote(body.memory_id, body.to || "global");
+      return Response.json({ success: promoted }, { headers: corsHeaders });
+    }
+
+    // ---- Candidate queue (F3) ----
+    if (method === "GET" && url.pathname === "/v1/candidates") {
+      const status = url.searchParams.get("status") || "pending";
+      const limit = parseInt(url.searchParams.get("limit") || "20", 10);
+      return Response.json({ success: true, candidates: engine.candidates(status, limit) }, { headers: corsHeaders });
+    }
+
+    if (method === "POST" && url.pathname === "/v1/candidates/decide") {
+      const body = await req.json().catch(() => ({}));
+      if (!body?.candidate_id || !body?.action) {
+        return Response.json(
+          { success: false, error: "Requires 'candidate_id' and 'action' ('approve' | 'reject')" },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+      if (body.action === "approve") {
+        const memoryId = await engine.promoteCandidate(body.candidate_id);
+        return Response.json({ success: Boolean(memoryId), memory_id: memoryId }, { headers: corsHeaders });
+      }
+      return Response.json({ success: engine.rejectCandidate(body.candidate_id) }, { headers: corsHeaders });
+    }
+
+    // ---- Conflict preview & belief explanation (F5 / F6) ----
+    if (method === "POST" && url.pathname === "/v1/memory/conflicts") {
+      const body = await req.json().catch(() => ({}));
+      if (!body?.content) {
+        return Response.json({ success: false, error: "Missing 'content'" }, { status: 400, headers: corsHeaders });
+      }
+      const conflicts = await engine.conflicts(body.content, { scope: body.scope, category: body.category });
+      return Response.json({ success: true, conflicts }, { headers: corsHeaders });
+    }
+
+    if (method === "POST" && url.pathname === "/v1/memory/why") {
+      const body = await req.json().catch(() => ({}));
+      if (!body?.claim) {
+        return Response.json({ success: false, error: "Missing 'claim'" }, { status: 400, headers: corsHeaders });
+      }
+      const explanation = await engine.why(body.claim, { limit: body.limit, min_score: body.min_score });
+      return Response.json({ success: true, explanation }, { headers: corsHeaders });
+    }
+
     // Consolidation pass
     if (method === "POST" && url.pathname === "/v1/memory/consolidate") {
       const report = engine.consolidate();

@@ -5,6 +5,7 @@ import { getDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
 import { isTransactionalNoise } from "./engine/dialectic.ts";
 import { formatBenchmarkReport } from "./engine/benchmark.ts";
+import { usageMultiplier } from "./engine/feedback.ts";
 import { getModelBudgetProfile } from "./engine/compactor.ts";
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
 
@@ -103,11 +104,23 @@ EXAMPLES:
   mnemo export team-guidelines.json -s global
 `;
 
+const GROWTH_HELP = `
+  session start|end|brief|list         Agent session lifecycle (goal, summary, auto-rollup)
+  feedback <id> --helped|--misled      Rate a memory so retrieval sharpens over time
+  usage <id>                           Show recall/helped/misled counters and rank multiplier
+  promotions [--min-projects 3]        Facts proven across projects, ready to promote
+  promote <id> [--to global]           Raise a memory's scope (project -> global)
+  candidates [approve|reject <id>]     Review queue staged by the ingest tap
+  conflicts "<content>"                Preview what a write would supersede or reinforce
+  why "<claim>"                        Evidence chain + contradictions, or abstain
+  scrub "<text>"                       Secret redaction preview (what would be stored)
+`;
+
 export async function runCli(args: string[]) {
   const command = args[0];
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
-    console.log(HELP);
+    console.log(HELP + GROWTH_HELP);
     return;
   }
 
@@ -148,6 +161,15 @@ export async function runCli(args: string[]) {
       rewind: { type: "string" },
       from: { type: "string" },
       "dry-run": { type: "boolean", default: false },
+      helped: { type: "boolean", default: false },
+      misled: { type: "boolean", default: false },
+      note: { type: "string" },
+      goal: { type: "string" },
+      name: { type: "string" },
+      summary: { type: "string" },
+      outcome: { type: "string" },
+      to: { type: "string" },
+      "min-projects": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
     allowPositionals: true,
@@ -257,12 +279,46 @@ Displays storage, notes, patterns, dreams, and RAM observability metrics.
 🛡️ mnemo preflight "<command>"
 Evaluate shell command against system guardrails (16GB RAM limit, no background, no DB staging).
 `,
+      session: `
+🗂️ mnemo session <start|end|brief|list>
+Agent session lifecycle. A session gives memories a home: writes carry its id, ending it
+condenses the session's micro-logs into one decision-ledger memory.
+
+USAGE:
+  mnemo session start [--goal "..."] [--name "..."] [--dir <path>]
+  mnemo session end [--summary "..."] [--outcome success|failure|neutral] [--session <id>]
+  mnemo session brief          # guardrails + blockers + current & previous session
+  mnemo session list [-l 10]
+`,
+      feedback: `
+📈 mnemo feedback <memory_id> --helped|--misled [--note "..."]
+Rate how a recalled memory performed. helped raises confidence and ranking,
+misled lowers both — retrieval sharpens instead of only growing.
+`,
+      candidates: `
+🧪 mnemo candidates [approve|reject <id>] [-l 20]
+Review the queue staged by the ingest tap. High-confidence turns promote themselves;
+borderline ones wait here instead of silently disappearing into notes.
+`,
+      promote: `
+⬆️  mnemo promote <memory_id> [--to global]
+Raise a memory's scope. Combine with 'mnemo promotions' to see facts proven across projects.
+`,
+      why: `
+🔎 mnemo why "<claim>"
+Explain a belief: supporting memories with scores, their triples, and any contradicting
+beliefs. Answers "no evidence" (abstain) rather than guessing.
+`,
+      conflicts: `
+⚖️  mnemo conflicts "<content>" [-s scope] [-c category]
+Preview what writing this would deduplicate, supersede, or keep side by side — before committing.
+`,
     };
 
     if (subHelps[command]) {
       console.log(subHelps[command]);
     } else {
-      console.log(HELP);
+      console.log(HELP + GROWTH_HELP);
     }
     return;
   }
@@ -1139,6 +1195,9 @@ Evaluate shell command against system guardrails (16GB RAM limit, no background,
         console.log(`\n\x1b[32m✔ Ingested successfully!\x1b[0m`);
         console.log(`  Action: \x1b[36m${res.action}\x1b[0m`);
         console.log(`  Notes ID: ${res.note_id}`);
+        if (res.candidates && res.candidates.stored > 0) {
+          console.log(`  Candidates: \x1b[36m${res.candidates.stored}\x1b[0m staged, ${res.candidates.promoted} auto-promoted, ${res.candidates.pending} pending review`);
+        }
         if (res.stored_in_facts) {
           console.log(`  Fact ID: \x1b[33m${res.fact_id || res.memory_id}\x1b[0m`);
         }
@@ -1349,6 +1408,164 @@ Evaluate shell command against system guardrails (16GB RAM limit, no background,
         console.log(`  Suggested Tool:     \x1b[33m${result.suggested_tool}\x1b[0m`);
         console.log(`  Tool Arguments:     ${JSON.stringify(result.tool_arguments)}`);
         console.log(`  Reason:             ${result.reason}\n`);
+        break;
+      }
+
+      case "session": {
+        const sub = (positionals[0] || "list").trim().toLowerCase();
+        if (sub === "start") {
+          const s = engine.startSession({
+            goal: values.goal,
+            name: values.name,
+            cwd: values.dir,
+            peer: values.peer,
+            model: values.model,
+          });
+          console.log(`\n▶️  Session started: \x1b[35m${s.id}\x1b[0m`);
+          console.log(`   Project: ${s.project || "(unknown)"} • Goal: ${s.goal || "(unstated)"}`);
+          console.log(`   All writes now carry this session id; end it with 'mnemo session end'.\n`);
+        } else if (sub === "end") {
+          const res = await engine.endSession({
+            session_id: values.session,
+            summary: values.summary,
+            outcome: (values.outcome as MemoryOutcome) || undefined,
+          });
+          console.log(`\n⏹️  Session ended: \x1b[35m${res.session.id}\x1b[0m`);
+          console.log(`   Outcome: ${res.session.outcome}`);
+          console.log(`   Summary: ${res.session.summary}`);
+          console.log(`   Rolled up: ${res.rolled_up} micro-items${res.macro_memory_id ? ` → \x1b[36m${res.macro_memory_id}\x1b[0m` : ""}\n`);
+        } else if (sub === "brief") {
+          console.log("\n" + engine.sessionBrief(values.dir).markdown + "\n");
+        } else {
+          const rows = engine.sessions(parseInt(values.limit || "10", 10));
+          console.log(`\n🗂️  Sessions (${rows.length})`);
+          if (rows.length === 0) console.log("   (none — start one with 'mnemo session start')");
+          for (const s of rows) {
+            const mark = s.status === "active" ? "▶️ " : s.status === "ended" ? "✅" : "⚠️ ";
+            console.log(`   ${mark} \x1b[35m${s.id.slice(0, 8)}\x1b[0m ${s.project || "-"} | ${s.outcome} | writes ${s.memory_writes} | recalls ${s.recall_count}`);
+            if (s.summary) console.log(`      ${s.summary.slice(0, 150)}`);
+          }
+          console.log("");
+        }
+        break;
+      }
+
+      case "feedback":
+      case "rate": {
+        if (!contentOrQuery) {
+          console.error("❌ Error: Provide a memory id. E.g. mnemo feedback <id> --helped");
+          process.exit(1);
+        }
+        if (!values.helped && !values.misled) {
+          console.error("❌ Error: Choose exactly one verdict: --helped or --misled");
+          process.exit(1);
+        }
+        const verdict = values.helped ? "helped" : "misled";
+        const usage = engine.rate(contentOrQuery, verdict, values.note);
+        if (!usage) {
+          console.error(`❌ No active memory with id '${contentOrQuery}'`);
+          process.exit(1);
+        }
+        console.log(`\n${verdict === "helped" ? "👍" : "👎"} Recorded '${verdict}' for \x1b[35m${contentOrQuery}\x1b[0m`);
+        console.log(`   Usage: recalled ${usage.recalled}× • helped ${usage.helped}× • misled ${usage.misled}×`);
+        console.log(`   Ranking multiplier now: ${usageMultiplier(usage)}\n`);
+        break;
+      }
+
+      case "usage": {
+        const usage = engine.usage(contentOrQuery);
+        if (!usage) {
+          console.log(`\nℹ No usage recorded for '${contentOrQuery}' yet.\n`);
+          break;
+        }
+        console.log(`\n📈 Usage for \x1b[35m${usage.memory_id}\x1b[0m`);
+        console.log(`   recalled ${usage.recalled}× • helped ${usage.helped}× • misled ${usage.misled}×`);
+        console.log(`   Ranking multiplier: ${usageMultiplier(usage)}${usage.note ? `\n   Note: ${usage.note}` : ""}\n`);
+        break;
+      }
+
+      case "promotions": {
+        const suggestions = engine.promotions(parseInt(values["min-projects"] || "3", 10));
+        console.log(`\n⬆️  Promotion candidates (${suggestions.length})`);
+        if (suggestions.length === 0) console.log("   (none — facts need proven use in several projects first)");
+        for (const s of suggestions) {
+          console.log(`   \x1b[35m${s.memory_id.slice(0, 8)}\x1b[0m [${s.scope}] ${s.content.slice(0, 90)}`);
+          console.log(`      ${s.reason}`);
+        }
+        console.log("");
+        break;
+      }
+
+      case "promote": {
+        if (!contentOrQuery) {
+          console.error("❌ Error: Provide a memory id. E.g. mnemo promote <id> --to global");
+          process.exit(1);
+        }
+        const target = (values.to as MemoryScope) || "global";
+        const ok = engine.promote(contentOrQuery, target);
+        console.log(ok ? `\n⬆️  Memory \x1b[35m${contentOrQuery}\x1b[0m promoted to scope '${target}'.\n` : `\n❌ Memory '${contentOrQuery}' not found or inactive.\n`);
+        break;
+      }
+
+      case "candidates": {
+        const sub = (positionals[0] || "list").trim().toLowerCase();
+        if (sub === "approve" || sub === "promote") {
+          const id = positionals[1];
+          const memoryId = await engine.promoteCandidate(id);
+          console.log(memoryId ? `\n✅ Candidate ${id} promoted → memory \x1b[35m${memoryId}\x1b[0m\n` : `\n❌ Candidate '${id}' not found.\n`);
+        } else if (sub === "reject") {
+          const ok = engine.rejectCandidate(positionals[1]);
+          console.log(ok ? `\n🗑️  Candidate ${positionals[1]} rejected.\n` : `\n❌ Candidate not found or already decided.\n`);
+        } else {
+          const rows = engine.candidates("pending", parseInt(values.limit || "20", 10));
+          console.log(`\n🧪 Pending memory candidates (${rows.length})`);
+          if (rows.length === 0) console.log("   (none — ingest turns produce candidates automatically)");
+          for (const c of rows) {
+            console.log(`   \x1b[35m${c.id.slice(0, 8)}\x1b[0m conf ${c.confidence.toFixed(2)} [${c.source}] ${c.content.slice(0, 100)}`);
+          }
+          if (rows.length > 0) console.log(`\n   Approve: mnemo candidates approve <id>  •  Reject: mnemo candidates reject <id>`);
+          console.log("");
+        }
+        break;
+      }
+
+      case "conflicts": {
+        if (!contentOrQuery) {
+          console.error("❌ Error: Provide the content to check. E.g. mnemo conflicts \"User deploys via Vercel\"");
+          process.exit(1);
+        }
+        const reports = await engine.conflicts(contentOrQuery, {
+          scope: values.scope as MemoryScope,
+          category: values.category as MemoryCategory,
+        });
+        console.log(`\n⚖️  Conflict preview (${reports.length})`);
+        if (reports.length === 0) console.log("   No existing belief conflicts with this write.");
+        for (const r of reports) {
+          console.log(`   [${r.kind}] score ${r.score} → \x1b[35m${r.memory_id.slice(0, 8)}\x1b[0m ${r.content.slice(0, 80)}`);
+          console.log(`      ${r.suggestion}`);
+        }
+        console.log("");
+        break;
+      }
+
+      case "why": {
+        if (!contentOrQuery) {
+          console.error("❌ Error: Provide a claim. E.g. mnemo why \"gateway runs on port 8787\"");
+          process.exit(1);
+        }
+        const explanation = await engine.why(contentOrQuery, { limit: parseInt(values.limit || "5", 10) });
+        console.log("\n" + explanation.markdown + "\n");
+        break;
+      }
+
+      case "scrub": {
+        if (!contentOrQuery) {
+          console.error("❌ Error: Provide text to scrub.");
+          process.exit(1);
+        }
+        const result = engine.scrub(contentOrQuery);
+        console.log(`\n🧼 Redactions: ${result.redacted}${result.redactions.length ? ` (${result.redactions.map((r) => `${r.kind}×${r.count}`).join(", ")})` : ""}`);
+        console.log(`   ${result.text}\n`);
         break;
       }
 

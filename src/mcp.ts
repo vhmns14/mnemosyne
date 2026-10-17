@@ -532,6 +532,139 @@ const TOOLS = [
       },
       required: ["memory_id", "file_path"]
     }
+  },
+  {
+    name: "session_start",
+    description: "Start an agent working session. Memories written afterwards carry its id, ending the session condenses its micro-logs, and the next session can inherit the goal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        goal: { type: "string", description: "What this session is trying to accomplish." },
+        name: { type: "string", description: "Optional short label." },
+        cwd: { type: "string", description: "Working directory (defaults to process cwd; its basename becomes the project)." },
+        peer: { type: "string", description: "Agent/user identity (default 'user')." },
+        model: { type: "string", description: "Model driving the session." }
+      }
+    }
+  },
+  {
+    name: "session_end",
+    description: "End the active session: writes a summary, records the outcome, and rolls the session's micro-memories into one decision-ledger memory.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session to end (defaults to the active one)." },
+        summary: { type: "string", description: "Human summary of what happened (auto-generated if omitted)." },
+        outcome: { type: "string", enum: ["success", "failure", "neutral"], description: "Session outcome." },
+        rollup: { type: "boolean", description: "Condense session micro-memories (default true)." }
+      }
+    }
+  },
+  {
+    name: "session_brief",
+    description: "Session briefing: hard guardrails, swarm blockers, stale code anchors, proven trajectories, plus the current and previous session goal/summary. Use at session start.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace_path: { type: "string", description: "Optional workspace path for staleness scanning." }
+      }
+    }
+  },
+  {
+    name: "session_list",
+    description: "List recent agent sessions with status, goal, outcome and activity counters.",
+    inputSchema: {
+      type: "object",
+      properties: { limit: { type: "number", description: "Max sessions to return (default 10)." } }
+    }
+  },
+  {
+    name: "rate_memory",
+    description: "Rate how a recalled memory performed. 'helped' raises its confidence and ranking, 'misled' lowers both so bad beliefs sink in future recalls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memory_id: { type: "string", description: "Memory UUID that was used." },
+        verdict: { type: "string", enum: ["helped", "misled"], description: "Outcome of using it." },
+        note: { type: "string", description: "Optional reason." }
+      },
+      required: ["memory_id", "verdict"]
+    }
+  },
+  {
+    name: "list_candidates",
+    description: "List staged memory candidates from automatic ingestion (pending review) with their confidence and extracted triples.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["pending", "promoted", "rejected"], description: "Filter by status (default pending)." },
+        limit: { type: "number", description: "Max candidates (default 20)." }
+      }
+    }
+  },
+  {
+    name: "promote_candidate",
+    description: "Promote a staged candidate into a real memory.",
+    inputSchema: {
+      type: "object",
+      properties: { candidate_id: { type: "string", description: "Candidate UUID." } },
+      required: ["candidate_id"]
+    }
+  },
+  {
+    name: "reject_candidate",
+    description: "Discard a staged candidate so it stops appearing in review.",
+    inputSchema: {
+      type: "object",
+      properties: { candidate_id: { type: "string", description: "Candidate UUID." } },
+      required: ["candidate_id"]
+    }
+  },
+  {
+    name: "list_promotions",
+    description: "List memories proven across several projects that should be promoted from project scope to global, so new workspaces inherit them.",
+    inputSchema: {
+      type: "object",
+      properties: { min_projects: { type: "number", description: "Distinct projects required (default 3)." } }
+    }
+  },
+  {
+    name: "promote_memory",
+    description: "Raise a memory's scope (e.g. project -> global) so every workspace inherits it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memory_id: { type: "string", description: "Memory UUID." },
+        to: { type: "string", enum: ["global", "project", "session"], description: "Target scope (default global)." }
+      },
+      required: ["memory_id"]
+    }
+  },
+  {
+    name: "check_conflicts",
+    description: "Preview what storing this content would do: duplicate, paraphrase, contradiction, single-value replacement, or multi-value coexistence. Read-only — nothing is written.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        content: { type: "string", description: "The statement you are about to store." },
+        scope: { type: "string", enum: ["global", "project", "session"], description: "Target scope." },
+        category: { type: "string", description: "Target category." }
+      },
+      required: ["content"]
+    }
+  },
+  {
+    name: "explain_belief",
+    description: "Explain why a claim is held: supporting memories with scores, their graph triples, usage verdicts, and contradicting beliefs. Abstains when evidence is thin.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        claim: { type: "string", description: "The claim to justify." },
+        limit: { type: "number", description: "Max evidence items (default 5)." },
+        min_score: { type: "number", description: "Relevance threshold for 'supported' (default 0.35)." }
+      },
+      required: ["claim"]
+    }
   }
 ];
 
@@ -1097,6 +1230,175 @@ async function handleMessage(line: string) {
         return;
       }
 
+
+      if (name === "session_start") {
+        const session = engine.startSession({
+          goal: args.goal,
+          name: args.name,
+          cwd: args.cwd,
+          peer: args.peer,
+          model: args.model,
+        });
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: `Session started: ${session.id}\nProject: ${session.project ?? "(unknown)"}\nGoal: ${session.goal || "(unstated)"}\nMemories written now carry this session id.`,
+              },
+            ],
+          },
+        });
+        return;
+      }
+
+      if (name === "session_end") {
+        const res = await engine.endSession({
+          session_id: args.session_id,
+          summary: args.summary,
+          outcome: args.outcome,
+          rollup: args.rollup,
+        });
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: `Session ${res.session.id} ended (${res.session.outcome}).\nSummary: ${res.session.summary}\nRolled up ${res.rolled_up} micro-items${res.macro_memory_id ? ` into ${res.macro_memory_id}` : ""}.`,
+              },
+            ],
+          },
+        });
+        return;
+      }
+
+      if (name === "session_brief") {
+        const brief = engine.sessionBrief(args.workspace_path);
+        sendJson({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: brief.markdown }] } });
+        return;
+      }
+
+      if (name === "session_list") {
+        const sessions = engine.sessions(args.limit || 10);
+        const text =
+          sessions.length === 0
+            ? "No sessions recorded yet."
+            : sessions
+                .map(
+                  (s) =>
+                    `- ${s.id} [${s.status}] ${s.project ?? "-"} • ${s.outcome} • writes ${s.memory_writes} • recalls ${s.recall_count}${s.summary ? `\n  ${s.summary}` : ""}`
+                )
+                .join("\n");
+        sendJson({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } });
+        return;
+      }
+
+      if (name === "rate_memory") {
+        const usage = engine.rate(args.memory_id, args.verdict, args.note);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: usage
+                  ? `Recorded '${args.verdict}' for ${args.memory_id}. recalled ${usage.recalled}×, helped ${usage.helped}×, misled ${usage.misled}×.`
+                  : `No active memory with id ${args.memory_id}.`,
+              },
+            ],
+          },
+        });
+        return;
+      }
+
+      if (name === "list_candidates") {
+        const candidates = engine.candidates(args.status || "pending", args.limit || 20);
+        const text =
+          candidates.length === 0
+            ? "No candidates in this state."
+            : candidates
+                .map(
+                  (c) =>
+                    `- ${c.id} (confidence ${c.confidence.toFixed(2)}, ${c.source})\n  ${c.content}${c.triples.length ? `\n  triples: ${c.triples.map((t) => `${t.subject}-[${t.predicate}]->${t.object}`).join("; ")}` : ""}`
+                )
+                .join("\n");
+        sendJson({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } });
+        return;
+      }
+
+      if (name === "promote_candidate") {
+        const memoryId = await engine.promoteCandidate(args.candidate_id);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: memoryId ? `Candidate promoted into memory ${memoryId}.` : `Candidate ${args.candidate_id} not found.`,
+              },
+            ],
+          },
+        });
+        return;
+      }
+
+      if (name === "reject_candidate") {
+        const ok = engine.rejectCandidate(args.candidate_id);
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: ok ? "Candidate rejected." : "Candidate not found or already decided." }] },
+        });
+        return;
+      }
+
+      if (name === "list_promotions") {
+        const suggestions = engine.promotions(args.min_projects || 3);
+        const text =
+          suggestions.length === 0
+            ? "No promotion candidates yet."
+            : suggestions
+                .map((s) => `- ${s.memory_id} [${s.scope}] ${s.content}\n  ${s.reason}`)
+                .join("\n");
+        sendJson({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } });
+        return;
+      }
+
+      if (name === "promote_memory") {
+        const ok = engine.promote(args.memory_id, args.to || "global");
+        sendJson({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{ type: "text", text: ok ? `Memory promoted to '${args.to || "global"}'.` : "Memory not found or inactive." }],
+          },
+        });
+        return;
+      }
+
+      if (name === "check_conflicts") {
+        const reports = await engine.conflicts(args.content, { scope: args.scope, category: args.category });
+        const text =
+          reports.length === 0
+            ? "No conflicts: this write is independent of existing beliefs."
+            : reports
+                .map((r) => `- [${r.kind}] ${r.memory_id} (score ${r.score})\n  existing: ${r.content}\n  ${r.suggestion}`)
+                .join("\n");
+        sendJson({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } });
+        return;
+      }
+
+      if (name === "explain_belief") {
+        const explanation = await engine.why(args.claim, { limit: args.limit, min_score: args.min_score });
+        sendJson({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: explanation.markdown }] } });
+        return;
+      }
 
       sendJson({
         jsonrpc: "2.0",

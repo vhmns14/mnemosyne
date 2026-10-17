@@ -1,6 +1,6 @@
 {
   "name": "mnemosyne-memory",
-  "version": "1.8.5",
+  "version": "1.9.0",
   "description": "Ultra-lightweight, local-first Long-Term Holographic & Dialectic Memory Engine for AI Agents",
   "type": "module",
   "bin": {

@@ -6,10 +6,14 @@ import { CONFIG } from "../config.ts";
 import type { 
   ConsolidationReport, EntityAlias, EntityTriple, PersonaProfile, 
   RememberOptions, FactInput, UpsertFactResult, DeleteBySourceOptions, DeleteBySourceResult,
-  IngestOptions, IngestResult, HermesStats
+  IngestOptions, IngestResult, HermesStats, MemoryScope, MemoryCategory
 } from "../types.ts";
 import { getEmbedding, cosineSimilarity, decodeVector } from "./embedder.ts";
 import { recordMemoryEvent } from "./doctor.ts";
+import { redactSecrets } from "./redact.ts";
+import { canonicalizeEntity, getAliasMap } from "./canonical.ts";
+import { touchSession, getActiveSessionId } from "./session.ts";
+import type { ConflictReport } from "../types.ts";
 
 /**
  * Normalized string hash fingerprint for instant zero-LLM deduplication.
@@ -178,7 +182,8 @@ export async function rememberMemory(
 ): Promise<string> {
   const id = randomUUID();
   const now = Date.now();
-  const content = options.content.trim();
+  // Redact before fingerprinting/embedding so secrets never reach the DB at all.
+  const content = redactSecrets(options.content.trim()).text;
   const scope = options.scope || "global";
   const category = options.category || "fact";
   const importance = options.importance || "normal";
@@ -219,7 +224,9 @@ export async function rememberMemory(
   const fingerprint = computeFingerprint(content);
   const structureType = options.structure_type || "freeform";
   const peer = options.peer || "user";
-  const sourceSession = options.source_session || null;
+  // Writes inherit the open session unless the caller pins one explicitly, so a
+  // session's memories are actually attributable when it ends.
+  const sourceSession = options.source_session || getActiveSessionId(db) || null;
   const memoryType = options.memory_type || (isNegative || options.category === "rule" || options.category === "negative_constraint" ? "imperative" : "declarative");
   const confidence = options.confidence !== undefined ? options.confidence : 1.0;
 
@@ -388,10 +395,11 @@ export async function rememberMemory(
 
   // 6. Ingest Triples & Automatic Conflict Resolution for Triples
   const extracted = options.entities || extractTriples(content);
+  const aliasMap = getAliasMap(db);
   for (const t of extracted) {
-    const subject = t.subject.trim();
+    const subject = canonicalizeEntity(t.subject.trim(), aliasMap);
     let predicate = t.predicate.trim().toUpperCase().replace(/\s+/g, "_");
-    const object = t.object.trim();
+    const object = canonicalizeEntity(t.object.trim(), aliasMap);
 
     // A. Honcho Self-Healing Conflict Resolution (Antonym / Polarity Check)
     const oppositePred = OPPOSITES[predicate];
@@ -471,7 +479,134 @@ export async function rememberMemory(
     }
   }
 
+  touchSession(db, "write");
   return id;
+}
+
+/**
+ * Write-time conflict reporting (F5): the read-only answer to "what will this
+ * write do to what I already believe?" — returned to the caller instead of
+ * silently superseding rows behind its back.
+ */
+export async function detectConflicts(
+  db: Database,
+  options: {
+    content: string;
+    entities?: Array<{ subject: string; predicate: string; object: string }>;
+    scope?: MemoryScope;
+    category?: MemoryCategory;
+  }
+): Promise<ConflictReport[]> {
+  const content = redactSecrets(options.content.trim()).text;
+  if (!content) return [];
+
+  const scope = options.scope || "global";
+  const category = options.category || "fact";
+  const reports: ConflictReport[] = [];
+  const seen = new Set<string>();
+  const push = (report: ConflictReport): void => {
+    const key = `${report.kind}:${report.memory_id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    reports.push(report);
+  };
+
+  const fingerprint = computeFingerprint(content);
+  const duplicate = db
+    .query("SELECT id, content FROM memories WHERE is_active = 1 AND fingerprint = ?")
+    .get(fingerprint) as { id: string; content: string } | null;
+  if (duplicate) {
+    push({
+      memory_id: duplicate.id,
+      content: duplicate.content,
+      kind: "duplicate",
+      score: 1,
+      suggestion:
+        "Identical statement already stored — recalling it (or writing again) reinforces it instead of adding a row.",
+    });
+  }
+
+  const aliasMap = getAliasMap(db);
+  const extracted = options.entities?.length ? options.entities : extractTriples(content);
+  for (const raw of extracted) {
+    const subject = canonicalizeEntity(raw.subject.trim(), aliasMap);
+    const predicate = raw.predicate.trim().toUpperCase().replace(/\s+/g, "_");
+    const object = canonicalizeEntity(raw.object.trim(), aliasMap);
+
+    const opposite = OPPOSITES[predicate];
+    if (opposite) {
+      const row = db
+        .query(
+          `SELECT t.memory_id, m.content FROM entity_triples t
+           JOIN memories m ON m.id = t.memory_id
+           WHERE t.is_active = 1 AND m.is_active = 1
+             AND LOWER(t.subject) = LOWER(?) AND t.predicate = ? AND LOWER(t.object) = LOWER(?)`
+        )
+        .get(subject, opposite, object) as { memory_id: string; content: string } | null;
+      if (row) {
+        push({
+          memory_id: row.memory_id,
+          content: row.content,
+          kind: "contradiction",
+          score: 1,
+          suggestion: `Opposite polarity (${opposite}) on the same object — this write supersedes '${row.memory_id}'.`,
+        });
+      }
+    }
+
+    const existing = db
+      .query(
+        `SELECT t.memory_id, t.object, m.content FROM entity_triples t
+         JOIN memories m ON m.id = t.memory_id
+         WHERE t.is_active = 1 AND m.is_active = 1
+           AND LOWER(t.subject) = LOWER(?) AND t.predicate = ?`
+      )
+      .all(subject, predicate) as Array<{ memory_id: string; object: string; content: string }>;
+
+    for (const old of existing) {
+      if (old.object.trim().toLowerCase() === object.toLowerCase()) continue;
+      push({
+        memory_id: old.memory_id,
+        content: old.content,
+        kind: MULTI_VALUED_PREDICATES[predicate] ? "multi_value_coexist" : "single_value_replacement",
+        score: 0.9,
+        suggestion: MULTI_VALUED_PREDICATES[predicate]
+          ? `'${predicate}' is multi-valued: '${old.object}' and '${object}' stay active side by side.`
+          : `'${predicate}' is single-valued: this write supersedes '${old.object}'.`,
+      });
+    }
+  }
+
+  try {
+    const vector = await getEmbedding(content);
+    const rows = db
+      .query(
+        `SELECT m.id, m.content, v.vector FROM memories m
+         JOIN memory_vectors v ON m.id = v.memory_id
+         WHERE m.is_active = 1 AND (m.scope = ? OR m.scope = 'global') AND m.category = ?
+         LIMIT 200`
+      )
+      .all(scope, category) as Array<{ id: string; content: string; vector: Uint8Array }>;
+
+    for (const row of rows) {
+      const rowVector = decodeVector(row.vector);
+      if (!rowVector) continue;
+      const similarity = cosineSimilarity(vector, rowVector);
+      if (similarity >= 0.92) {
+        push({
+          memory_id: row.id,
+          content: row.content,
+          kind: "paraphrase",
+          score: Number(similarity.toFixed(4)),
+          suggestion: "≥0.92 similar to this memory — the write reinforces it instead of creating a new row.",
+        });
+      }
+    }
+  } catch {
+    // Vector comparison is best-effort (provider may be unavailable)
+  }
+
+  return reports.sort((a, b) => b.score - a.score);
 }
 
 /**
@@ -926,9 +1061,9 @@ export async function ingestMessageOrFact(
   options: IngestOptions
 ): Promise<IngestResult> {
   const peer = options.peer || "user";
-  const sessionId = options.session_id || undefined;
+  const sessionId = options.session_id || getActiveSessionId(db) || undefined;
   const role = options.role || "user";
-  const content = options.content.trim();
+  const content = redactSecrets(options.content.trim()).text;
   const now = Date.now();
 
   // 1. Layer 3 (Notes): Always append to notes raw history

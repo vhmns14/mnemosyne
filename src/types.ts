@@ -563,6 +563,8 @@ export interface IngestResult {
   memory_id?: string;
   fingerprint?: string;
   action: "ingested_note" | "inserted_fact" | "reinforced_fact" | "ignored_noise";
+  /** Candidate staging outcome when the ingest tap scored this turn (F3). */
+  candidates?: CandidateExtractionResult;
 }
 
 /**
@@ -821,3 +823,164 @@ export interface MemoryEventMessage {
   data: any;
 }
 
+
+/* ------------------------------------------------------------------ *
+ * Session Lifecycle (F1)
+ * ------------------------------------------------------------------ */
+
+export interface SessionRecord {
+  id: string;
+  name: string | null;
+  goal: string;
+  cwd: string | null;
+  project: string | null;
+  peer: string;
+  model: string | null;
+  started_at: number;
+  ended_at: number | null;
+  status: "active" | "ended" | "abandoned";
+  summary: string | null;
+  outcome: MemoryOutcome;
+  memory_writes: number;
+  recall_count: number;
+  rollup_memory_id: string | null;
+}
+
+export interface SessionStartOptions {
+  name?: string;
+  goal?: string;
+  cwd?: string;
+  project?: string;
+  peer?: string;
+  model?: string;
+}
+
+export interface SessionEndOptions {
+  session_id?: string;
+  summary?: string;
+  outcome?: MemoryOutcome;
+  rollup?: boolean;
+}
+
+export interface SessionEndResult {
+  session: SessionRecord;
+  rolled_up: number;
+  macro_memory_id: string | null;
+}
+
+export interface SessionBrief {
+  markdown: string;
+  session: SessionRecord | null;
+  previous: SessionRecord | null;
+  guardrails_count: number;
+  open_blockers: number;
+}
+
+/* ------------------------------------------------------------------ *
+ * Usage Feedback & Cross-Project Promotion (F2 + F4)
+ * ------------------------------------------------------------------ */
+
+export type UsageVerdict = "helped" | "misled";
+
+export interface MemoryUsage {
+  memory_id: string;
+  recalled: number;
+  helped: number;
+  misled: number;
+  last_used_at: number;
+  note: string | null;
+}
+
+export interface PromotionSuggestion {
+  memory_id: string;
+  content: string;
+  scope: MemoryScope;
+  projects: string[];
+  project_count: number;
+  helped: number;
+  reason: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * Memory Candidates (F3)
+ * ------------------------------------------------------------------ */
+
+export interface MemoryCandidate {
+  id: string;
+  session_id: string | null;
+  content: string;
+  triples: Array<{ subject: string; predicate: string; object: string }>;
+  confidence: number;
+  source: string;
+  status: "pending" | "promoted" | "rejected";
+  promoted_memory_id: string | null;
+  created_at: number;
+  decided_at: number | null;
+}
+
+export interface CandidateExtractionResult {
+  stored: number;
+  promoted: number;
+  pending: number;
+  candidate_ids: string[];
+}
+
+/* ------------------------------------------------------------------ *
+ * Write-Time Conflict Reporting (F5)
+ * ------------------------------------------------------------------ */
+
+export type ConflictKind =
+  | "duplicate"
+  | "paraphrase"
+  | "contradiction"
+  | "single_value_replacement"
+  | "multi_value_coexist";
+
+export interface ConflictReport {
+  memory_id: string;
+  content: string;
+  kind: ConflictKind;
+  score: number;
+  suggestion: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * Belief Explanation (F6)
+ * ------------------------------------------------------------------ */
+
+export interface BeliefEvidence {
+  memory_id: string;
+  content: string;
+  category: MemoryCategory;
+  scope: MemoryScope;
+  score: number;
+  source_session: string | null;
+  triples: Array<{ subject: string; predicate: string; object: string }>;
+  helped: number;
+  misled: number;
+}
+
+export interface BeliefExplanation {
+  claim: string;
+  supported: boolean;
+  confidence: number;
+  verdict: string;
+  evidence: BeliefEvidence[];
+  contradictions: Array<{ subject: string; positive: string; negative: string }>;
+  markdown: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * Secret Redaction (F7)
+ * ------------------------------------------------------------------ */
+
+export interface RedactionSummary {
+  kind: string;
+  count: number;
+}
+
+export interface RedactionResult {
+  text: string;
+  redacted: number;
+  redactions: RedactionSummary[];
+}
