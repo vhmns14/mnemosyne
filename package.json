@@ -11,6 +11,7 @@
     "cli": "bun run src/cli.ts",
     "mcp": "bun run src/mcp.ts",
     "server": "bun run src/server.ts",
+    "typecheck": "tsc --noEmit",
     "test": "bun test --timeout 20000"
   },
   "keywords": [

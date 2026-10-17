@@ -365,7 +365,12 @@ export async function runHermesDreamerPass(
           `).run(patId, p.pattern, p.type || "preference", p.confidence ?? 0.85, JSON.stringify(p.sources || []), now, now);
         }
         patternsFound++;
-        patternsOutput.push(p);
+        patternsOutput.push({
+          pattern: p.pattern,
+          type: p.type || "preference",
+          confidence: p.confidence ?? 0.85,
+          sources: p.sources || [],
+        });
       }
     }
 

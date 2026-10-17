@@ -15,7 +15,7 @@
 
 SOTA memory architectures offer profound concepts, but their implementations are notoriously heavy:
 - **Honcho / Zep / Letta (MemGPT)**: Often require Docker, PostgreSQL, Qdrant/Milvus, Redis, and multi-gigabyte Python microservices that burn laptop RAM and CPU.
-- **Mnemosyne**: Distills the mathematical and cognitive essence of these systems into a **verified ~18MB RSS RAM, single Bun process backed by SQLite WAL**, booting in `<20ms` with `<15ms` retrieval latensi.
+- **Mnemosyne**: Distills the mathematical and cognitive essence of these systems into a **measured ~53MB RSS RAM (idle daemon), single Bun process backed by SQLite WAL**, booting in `<20ms` with `<15ms` retrieval latensi.
 
 ---
 
@@ -48,7 +48,7 @@ SOTA memory architectures offer profound concepts, but their implementations are
 | **Web Dashboard** | Zero-Dependency UI | Single-page HTML canvas visualizer, live guardrail monitor, and 1-click Context Doctor repair. |
 | **Pluggable Vectors** | Resilient Hybrid Dispatch | Supports local 384-d sparse hash, Ollama, and OpenAI vectors with instant zero-crash fallback. |
 | **Auto MCP Installer** | 1-Click Client Setup | `mnemo mcp install [opencode\|claude\|cursor]` automatically configures client configs without manual JSON edits. |
-| **Systemd Service** | Zero-Touch Daemon Autostart | `mnemo service install` registers a lightweight systemd user service (`Restart=always`, <30MB RAM). |
+| **Systemd Service** | Zero-Touch Daemon Autostart | `mnemo service install` registers a lightweight systemd user service (`Restart=always`, measured ~53MB RSS idle). |
 | **Hermes Agent Bridge** | Instant Context Injection | `mnemo-hermes "<prompt>"` pipes guardrails & relevant memory directly into Hermes Agent `--system`. |
 | **Atomic Online Backup**| Non-Blocking Snapshots | `mnemo backup create/list/restore` snapshots database atomically via SQLite `VACUUM INTO`. |
 | **Obsidian / Manus / OpenClaw** | Markdown-First Vault Mirror | `mnemo vault [export\|import\|sync]` maintains transparent human-editable Markdown vault with YAML frontmatter. |

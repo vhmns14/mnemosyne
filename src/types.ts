@@ -126,11 +126,12 @@ export interface RememberOptions {
   outcome?: MemoryOutcome;
   failure_reason?: string | null;
   is_negative_constraint?: boolean;
-  actor?: "user" | "agent";
+  confidence?: number;
+  actor?: string;
 
   // Provenance & Honcho Thin Self-Healing Architecture
   peer?: string;
-  source_session?: string;
+  source_session?: string | null;
   memory_type?: "declarative" | "imperative";
   skip_note_log?: boolean;
 }
@@ -144,7 +145,7 @@ export interface FactInput {
   scope?: MemoryScope;
   category?: MemoryCategory;
   peer?: string;
-  source_session?: string;
+  source_session?: string | null;
   confidence?: number;
   importance?: MemoryImportance;
   valid_until?: number;

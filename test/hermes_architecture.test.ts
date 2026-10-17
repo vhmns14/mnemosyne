@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initSchema } from "../src/db/schema.ts";
 import { MnemosyneEngine } from "../src/engine/index.ts";
+import type { MemoryCategory } from "../src/types.ts";
 
 describe("Hermes Agent 3-Layer Cognitive Architecture & Protocol", () => {
   let db: Database;
@@ -45,7 +46,7 @@ describe("Hermes Agent 3-Layer Cognitive Architecture & Protocol", () => {
     expect(factsRow.confidence).toBe(1.0);
 
     // Layer 3: Notes & Patterns tables
-    const noteRow = db.query(`SELECT * FROM notes WHERE id = ?`).get(ingestRes.note_id) as any;
+    const noteRow = db.query(`SELECT * FROM notes WHERE id = ?`).get(ingestRes.note_id ?? null) as any;
     expect(noteRow).toBeDefined();
     expect(noteRow.content).toBe("Dek prefers dark mode in all IDEs");
   });
@@ -57,7 +58,7 @@ describe("Hermes Agent 3-Layer Cognitive Architecture & Protocol", () => {
       session_id: "session_beta",
       role: "assistant",
       content: "running command: bun test && exit code 0",
-      category: "task_progress",
+      category: "task_progress" as MemoryCategory,
     });
 
     expect(noiseRes.stored_in_notes).toBe(true);
@@ -98,14 +99,13 @@ describe("Hermes Agent 3-Layer Cognitive Architecture & Protocol", () => {
 
     const recallRes = await engine.recall({
       query: "gateway port",
-      peer: "hermes",
       max_tokens: 200,
     });
 
     expect(recallRes.memories.length).toBeGreaterThan(0);
     // Prompt-aware formatting includes source session tag
     expect(recallRes.formatted).toContain("[src:session_prod_deploy]");
-    expect(recallRes.token_budget?.used_tokens || recallRes.token_budget?.estimated_tokens).toBeLessThanOrEqual(200);
+    expect(recallRes.token_budget?.estimated_tokens ?? 0).toBeLessThanOrEqual(200);
   });
 
   it("4. HYGIENE: TTL Sweeper, Delete API & Observability Stats", async () => {

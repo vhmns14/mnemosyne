@@ -84,7 +84,8 @@ import type {
   SessionRecord, SessionStartOptions, SessionEndOptions, SessionEndResult, SessionBrief,
   MemoryUsage, UsageVerdict, PromotionSuggestion, MemoryCandidate, ConflictReport,
   BeliefExplanation, RedactionResult,
-  MemoryScope
+  MemoryScope,
+  MemoryCategory
 } from "../types.ts";
 
 

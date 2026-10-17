@@ -1,6 +1,6 @@
 import { VERSION } from "../config.ts";
 
-export function getDashboardHtml(): string {
+export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): string {
   return `<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
@@ -930,7 +930,7 @@ export function getDashboardHtml(): string {
           <div class="workspace-icon"></div>
           <div class="workspace-info">
             <div class="workspace-title">Active Workspace</div>
-            <div class="workspace-sub">~/.mnemosyne/memory.db</div>
+            <div class="workspace-sub">${dbPath}</div>
           </div>
         </div>
       </div>

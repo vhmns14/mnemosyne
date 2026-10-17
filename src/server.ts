@@ -7,6 +7,18 @@ import { MnemosyneEngine } from "./engine/index.ts";
 import { getDashboardHtml } from "./dashboard/template.ts";
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
 
+// Request body shapes for POST routes. JSON bodies are untrusted input; these
+// types are the validated-by-guard subset actually read by each route.
+interface FeedbackBody { memory_id?: string; verdict?: string; note?: string }
+interface PromoteBody { memory_id?: string; to?: MemoryScope }
+interface DecideBody { candidate_id?: string; action?: string }
+interface ConflictsBody { content?: string; scope?: MemoryScope; category?: MemoryCategory }
+interface WhyBody { claim?: string; limit?: number; min_score?: number }
+
+function readBody<T extends object>(req: Request): Promise<T> {
+  return req.json().then((json) => json as T).catch(() => ({} as T));
+}
+
 function formatBytes(bytes: number): string {
   if (bytes <= 0 || isNaN(bytes)) return "0 B";
   const k = 1024;
@@ -112,7 +124,7 @@ try {
 
     // Dashboard HTML UI (zero dependency single-page app)
     if ((method === "GET" || method === "HEAD") && (url.pathname === "/" || url.pathname === "/dashboard")) {
-      return new Response(method === "HEAD" ? null : getDashboardHtml(), {
+      return new Response(method === "HEAD" ? null : getDashboardHtml(CONFIG.DB_PATH), {
         headers: {
           ...corsHeaders,
           "Content-Type": "text/html; charset=utf-8",
@@ -131,8 +143,6 @@ try {
           status: "ok",
           service: "mnemosyne-memory",
           version: VERSION,
-          db_path: CONFIG.DB_PATH,
-          weights: CONFIG.WEIGHTS,
         },
         { headers: corsHeaders }
       );
@@ -348,7 +358,7 @@ try {
 
     // ---- Usage feedback & promotion (F2 / F4) ----
     if (method === "POST" && url.pathname === "/v1/memory/feedback") {
-      const body = await req.json().catch(() => ({}));
+      const body = await readBody<FeedbackBody>(req);
       const verdict = body?.verdict === "misled" ? "misled" : body?.verdict === "helped" ? "helped" : null;
       if (!body?.memory_id || !verdict) {
         return Response.json(
@@ -366,7 +376,7 @@ try {
     }
 
     if (method === "POST" && url.pathname === "/v1/memory/promote") {
-      const body = await req.json().catch(() => ({}));
+      const body = await readBody<PromoteBody>(req);
       if (!body?.memory_id) {
         return Response.json({ success: false, error: "Missing 'memory_id'" }, { status: 400, headers: corsHeaders });
       }
@@ -382,7 +392,7 @@ try {
     }
 
     if (method === "POST" && url.pathname === "/v1/candidates/decide") {
-      const body = await req.json().catch(() => ({}));
+      const body = await readBody<DecideBody>(req);
       if (!body?.candidate_id || !body?.action) {
         return Response.json(
           { success: false, error: "Requires 'candidate_id' and 'action' ('approve' | 'reject')" },
@@ -398,7 +408,7 @@ try {
 
     // ---- Conflict preview & belief explanation (F5 / F6) ----
     if (method === "POST" && url.pathname === "/v1/memory/conflicts") {
-      const body = await req.json().catch(() => ({}));
+      const body = await readBody<ConflictsBody>(req);
       if (!body?.content) {
         return Response.json({ success: false, error: "Missing 'content'" }, { status: 400, headers: corsHeaders });
       }
@@ -407,7 +417,7 @@ try {
     }
 
     if (method === "POST" && url.pathname === "/v1/memory/why") {
-      const body = await req.json().catch(() => ({}));
+      const body = await readBody<WhyBody>(req);
       if (!body?.claim) {
         return Response.json({ success: false, error: "Missing 'claim'" }, { status: 400, headers: corsHeaders });
       }
@@ -724,7 +734,7 @@ try {
     // Zero-LLM Fast Intent Router (POST /v1/memory/route, POST /v1/route)
     if (method === "POST" && (url.pathname === "/v1/memory/route" || url.pathname === "/v1/route")) {
       try {
-        const body = (await req.json().catch(() => ({}))) || {};
+        const body = await readBody<{ prompt?: string; query?: string }>(req);
         const prompt = body.prompt || body.query || "";
         if (!prompt) {
           return Response.json(
@@ -995,7 +1005,6 @@ try {
         }
         const recallRes = await engine.recall({
           query: body.query,
-          peer: body.peer,
           scope: body.scope,
           max_tokens: body.max_tokens || 350,
           limit: body.limit || 10,

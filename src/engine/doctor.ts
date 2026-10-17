@@ -214,7 +214,7 @@ export function recordMemoryEvent(
   memoryId: string,
   eventType: "CREATED" | "MUTATED" | "SUPERSEDED" | "PURGED",
   payload: string,
-  actor: "user" | "agent" = "user"
+  actor: string = "user"
 ): void {
   const id = randomUUID();
   db.prepare(`

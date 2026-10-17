@@ -22,5 +22,8 @@ jobs:
       - name: Install Dependencies
         run: bun install
 
+      - name: Typecheck
+        run: bun x tsc --noEmit
+
       - name: Run Test Suite
         run: bun test

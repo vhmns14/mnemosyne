@@ -86,8 +86,8 @@ export const MULTI_VALUED_PREDICATES: Record<string, true> = {
  * Tuned rule-based triple extractor: (Subject)-[Predicate]->(Object)
  * Highly optimized for Indonesian and English developer statements.
  */
-export function extractTriples(text: string): Array<{ subject: string; predicate: string; object: string }> {
-  const triples: Array<{ subject: string; predicate: string; object: string }> = [];
+export function extractTriples(text: string): Array<{ subject: string; predicate: string; object: string; raw_predicate?: string }> {
+  const triples: Array<{ subject: string; predicate: string; object: string; raw_predicate?: string }> = [];
   const normalized = text.trim();
 
   // A sentence may carry several independent facts ("User likes pizza and User
@@ -239,9 +239,11 @@ export async function rememberMemory(
 
     if (fpMatch && Boolean(fpMatch.is_negative_constraint) === isNegative) {
       let existingTags: string[] = [];
-      try {
-        existingTags = typeof fpMatch.tags === "string" ? JSON.parse(fpMatch.tags) : (fpMatch.tags || []);
-      } catch {}
+try {
+          existingTags = typeof fpMatch.tags === "string" ? JSON.parse(fpMatch.tags) : (fpMatch.tags || []);
+        } catch (err) {
+          console.warn(`[mnemo] corrupt tags on fingerprint ${fpMatch.fingerprint}: ${(err as Error).message}`);
+        }
 
       const mergedTags = Array.from(new Set([...existingTags, ...tags]));
       const updatedCount = (fpMatch.access_count || 0) + 1;
@@ -309,7 +311,9 @@ export async function rememberMemory(
         let existingTags: string[] = [];
         try {
           existingTags = typeof bestMatch.tags === "string" ? JSON.parse(bestMatch.tags) : (bestMatch.tags || []);
-        } catch {}
+        } catch (err) {
+          console.warn(`[mnemo] corrupt tags on memory ${bestMatch.id}: ${(err as Error).message}`);
+        }
 
         const mergedTags = Array.from(new Set([...existingTags, ...tags]));
         const updatedCount = (bestMatch.access_count || 0) + 1;

@@ -189,6 +189,7 @@ describe("Mnemosyne Cognitive Expansion: 6 Core Next-Gen Capabilities", () => {
         { strategy: "jwt", provider: "lucia", verified: true },
         "verifier-agent"
       );
+      if (!v1) throw new Error("expected v1");
       expect(v1.version).toBe(2);
       expect(v1.state_type).toBe("verified_fact");
 

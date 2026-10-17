@@ -19,7 +19,10 @@ if (!existsSync(defaultDir)) {
     defaultDir = join(process.cwd(), ".mnemo");
     try {
       mkdirSync(defaultDir, { recursive: true });
-    } catch {}
+    } catch (err) {
+      // If this fails the DB open crashes later with a bare ENOENT; name the culprit now.
+      console.warn(`[mnemo] cannot create ${defaultDir}: ${(err as Error).message}`);
+    }
   }
 }
 

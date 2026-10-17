@@ -1375,7 +1375,7 @@ Preview what writing this would deduplicate, supersede, or keep side by side —
         console.log(`\n🔄 Rolling up episodic micro-memories for session '${sessionId || "auto"}'...`);
         const result = await engine.rollup({
           session_id: sessionId,
-          tag: values.tag,
+          tag: values.tag?.[0],
         });
 
         if (result.rolled_up_count === 0) {

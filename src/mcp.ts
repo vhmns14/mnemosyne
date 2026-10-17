@@ -1042,7 +1042,7 @@ async function handleMessage(line: string) {
       }
 
       if (name === "sleep_dreamer_pass") {
-        const res = await engine.dream({ dryRun: Boolean(args.dry_run) });
+        const res = await engine.dream({ dry_run: Boolean(args.dry_run) });
         sendJson({
           jsonrpc: "2.0",
           id,

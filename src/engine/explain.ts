@@ -48,7 +48,7 @@ export async function explainBelief(
     category: m.category as MemoryCategory,
     scope: m.scope as MemoryScope,
     score: Number(m.score.toFixed(4)),
-    source_session: m.source_session,
+    source_session: m.source_session ?? null,
     triples: triplesByMemory.get(m.id) ?? [],
     helped: usage.get(m.id)?.helped ?? 0,
     misled: usage.get(m.id)?.misled ?? 0,

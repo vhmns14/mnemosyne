@@ -18,8 +18,10 @@ export async function rollupSessionMemories(
   const autoArchive = options.auto_archive !== false;
 
   // 1. Determine target session_id
-  let targetSession = options.session_id?.trim();
-  if (!targetSession) {
+  let targetSession: string;
+  if (options.session_id?.trim()) {
+    targetSession = options.session_id.trim();
+  } else {
     // Find the session with the most active un-rolled episodic memories
     const sessionRow = db.query(`
       SELECT source_session, COUNT(*) as cnt 
@@ -31,7 +33,7 @@ export async function rollupSessionMemories(
       GROUP BY source_session 
       ORDER BY cnt DESC, created_at DESC 
       LIMIT 1
-    `).get() as any;
+    `).get() as { source_session?: string } | null;
 
     targetSession = sessionRow?.source_session || "default";
   }
