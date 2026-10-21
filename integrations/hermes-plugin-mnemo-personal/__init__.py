@@ -37,9 +37,9 @@ except ImportError:  # pragma: no cover - exercised only on very old Hermes
     _spawn_context_thread = None
 
 try:
-    from .client import DaemonClient, DaemonError, Outbox, fence, is_trivial, session_key, strip_fences
+    from .client import FACT_ID_RE, DaemonClient, DaemonError, Outbox, fence, is_trivial, load_nonce, session_key, strip_fences
 except ImportError:  # loaded as a top-level module (tests / standalone)
-    from client import DaemonClient, DaemonError, Outbox, fence, is_trivial, session_key, strip_fences  # type: ignore
+    from client import FACT_ID_RE, DaemonClient, DaemonError, Outbox, fence, is_trivial, load_nonce, session_key, strip_fences  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,8 @@ class MnemoPersonalProvider(MemoryProvider):
         self._threads: List[threading.Thread] = []
         self._lock = threading.Lock()
         self._initialized = False
+        self._nonce = ""
+        self._cwd: Optional[str] = None
 
     # ------------------------------------------------------------------ core
     @property
@@ -173,6 +175,7 @@ class MnemoPersonalProvider(MemoryProvider):
         base_url = os.environ.get("MNEMO_PERSONAL_URL") or str(cfg.get("base_url") or DEFAULTS["base_url"])
         self._client = DaemonClient(base_url, _secret(str(cfg.get("api_key_env") or "")), float(cfg.get("timeout") or 5.0))
         self._outbox = Outbox(self._home / PROVIDER_NAME / "outbox.jsonl" if self._home is not None else None)
+        self._nonce = load_nonce(self._home / PROVIDER_NAME / "fence.nonce" if self._home is not None else None)
         self._session_id = session_id or ""
         cwd = kwargs.get("cwd")
         if not cwd and cfg.get("sessionStrategy") in ("per-directory", "per-repo"):
@@ -182,6 +185,7 @@ class MnemoPersonalProvider(MemoryProvider):
                 cwd = resolve_agent_cwd()
             except Exception:
                 cwd = None
+        self._cwd = cwd
         self._session_key = session_key(str(cfg.get("sessionStrategy")), self._session_id, cwd)
         self._peer = str(cfg.get("peer") or "user")
         from urllib.parse import quote
@@ -260,7 +264,7 @@ class MnemoPersonalProvider(MemoryProvider):
             parts.append("## Relevant memories\n" + "\n".join(recall_lines))
         if self._dialectic_text:
             parts.append("## What memory says about this request\n" + self._dialectic_text)
-        return fence(self._budget("\n\n".join(parts))) if parts else ""
+        return fence(self._budget("\n\n".join(parts)), self._nonce) if parts else ""
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._initialized or self._client is None or self._cfg.get("recallMode") == "tools":
@@ -294,7 +298,7 @@ class MnemoPersonalProvider(MemoryProvider):
             return
         self._dialectic_turn = self._turn
         depth = max(1, min(3, int(self._cfg.get("dialecticDepth") or 1)))
-        question = f"What should an assistant know about this person to respond well to: {strip_fences(query)[:500]}"
+        question = f"What should an assistant know about this person to respond well to: {strip_fences(query, self._nonce)[:500]}"
 
         def _run() -> None:
             try:
@@ -327,8 +331,8 @@ class MnemoPersonalProvider(MemoryProvider):
         self._turn += 1
         if not self._initialized or not self._writes_enabled:
             return
-        user = strip_fences(user_content or "")
-        assistant = strip_fences(assistant_content or "")
+        user = strip_fences(user_content or "", self._nonce)
+        assistant = strip_fences(assistant_content or "", self._nonce)
         try:
             from agent.memory_manager import sanitize_context  # type: ignore
 
@@ -353,20 +357,46 @@ class MnemoPersonalProvider(MemoryProvider):
         if self._writes_enabled:
             self._flush()
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]], *, require_checkpoint: bool = False) -> str:
+    def on_pre_compress(self, messages: List[Dict[str, Any]], *, require_checkpoint: bool = False, **kwargs: Any) -> str:
         if not self._initialized or self._client is None:
-            raise RuntimeError("mnemo-personal is not initialized")
+            if require_checkpoint:
+                raise RuntimeError("mnemo-personal is not initialized")
+            return ""
         if not self._writes_enabled:
             return "mnemo-personal: checkpoint skipped (non-primary agent context)"
         rows = [
-            {"role": m.get("role"), "content": strip_fences(m.get("content"))}
+            {"role": m.get("role"), "content": strip_fences(m.get("content"), self._nonce)}
             for m in messages or []
             if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)
         ]
-        # Raises DaemonError on failure: with checkpoint_required the host then keeps the transcript.
-        res = self._client.request("POST", f"/v1/peers/{self._peer_q}/checkpoint", {"session": self._session_key, "messages": rows}, timeout=15)
+        try:
+            res = self._client.request("POST", f"/v1/peers/{self._peer_q}/checkpoint", {"session": self._session_key, "messages": rows}, timeout=15)
+        except DaemonError:
+            if require_checkpoint:
+                raise  # fail closed: the host keeps the transcript
+            # Hosts without the checkpoint contract compress anyway: keep the turns in
+            # the durable outbox so they are not lost while the daemon is down.
+            base = int(time.time() * 1000)
+            self._outbox.append(
+                [{"peer": self._peer, "session": self._session_key, "role": r["role"], "content": r["content"], "ts": base + i, "source": "checkpoint"} for i, r in enumerate(rows) if r["content"]]
+            )
+            return ""
         state = "already archived" if res.get("duplicate") else f"{res.get('queued', 0)} new messages queued for extraction"
         return f"mnemo-personal checkpoint {res.get('checkpoint_id')}: {state}"
+
+    def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, rewound: bool = False, **kwargs: Any) -> None:
+        """Keep writes in the right session after /new, /reset, /resume, /branch or compression."""
+        if not self._initialized:
+            return
+        self._session_id = new_session_id or self._session_id
+        cwd = kwargs.get("cwd") or self._cwd
+        self._session_key = session_key(str(self._cfg.get("sessionStrategy")), self._session_id, cwd)
+        if reset or rewound:
+            self._turn = 0
+            self._base_text = ""
+            self._base_turn = -(10**9)
+            self._dialectic_text = ""
+            self._dialectic_turn = -(10**9)
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._initialized or not self._writes_enabled or target not in ("user", "memory"):
@@ -414,8 +444,11 @@ class MnemoPersonalProvider(MemoryProvider):
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs: Any) -> str:
         if self._client is None:
             return json.dumps({"error": "mnemo-personal is not initialized"})
-        args = args or {}
+        args = args if isinstance(args, dict) else {}
         p = f"/v1/peers/{self._peer_q}"
+        writes = {"mnemo_conclude", "mnemo_feedback"} | ({"mnemo_profile"} if (args.get("reset") or isinstance(args.get("card"), list)) else set())
+        if tool_name in writes and not self._writes_enabled:
+            return json.dumps({"error": "mnemo-personal is read-only in this agent context (cron/subagent)"})
         try:
             if tool_name == "mnemo_profile":
                 if args.get("reset"):
@@ -429,29 +462,38 @@ class MnemoPersonalProvider(MemoryProvider):
             if tool_name == "mnemo_search":
                 from urllib.parse import urlencode
 
-                q = urlencode({"q": str(args.get("query", "")), "tier": args.get("tier") or "L0", "limit": int(args.get("limit") or 8)})
+                tier = args.get("tier") if args.get("tier") in ("L0", "L1", "L2") else "L0"
+                q = urlencode({"q": str(args.get("query", ""))[:500], "tier": tier, "limit": max(1, min(50, int(args.get("limit") or 8)))})
                 res = self._client.request("GET", f"{p}/search?{q}")
                 return json.dumps({"tier": res.get("tier"), "items": res.get("items", [])})
             if tool_name == "mnemo_context":
                 res = self._client.request("POST", f"{p}/context", {"query": args.get("query") or "", "session": self._session_key, "tier": "L1"})
                 return json.dumps({"context": res.get("text", ""), "base": res.get("base", {})})
             if tool_name == "mnemo_ask":
-                res = self._client.request("POST", f"{p}/ask", {"question": str(args.get("question", "")), "depth": int(args.get("depth") or 1)}, timeout=90)
+                res = self._client.request("POST", f"{p}/ask", {"question": str(args.get("question", ""))[:2000], "depth": max(1, min(3, int(args.get("depth") or 1)))}, timeout=90)
                 return json.dumps({k: res.get(k) for k in ("answer", "abstained", "citations", "depth")})
             if tool_name == "mnemo_conclude":
                 has_c, has_d = bool(args.get("conclusion")), bool(args.get("delete_id"))
                 if has_c == has_d:
                     return json.dumps({"error": "pass exactly one of `conclusion` or `delete_id`"})
                 if has_d:
+                    if not FACT_ID_RE.match(str(args["delete_id"])):
+                        return json.dumps({"error": "delete_id must be a fact id (uuid) from search/ask results"})
                     res = self._client.request("DELETE", f"{p}/facts/{args['delete_id']}")
                     return json.dumps({"deleted": bool(res.get("success")), "id": args["delete_id"]})
                 res = self._client.request("POST", f"{p}/conclusions", {"content": str(args["conclusion"]), "category": args.get("category")})
                 return json.dumps({"id": res.get("id"), "action": res.get("action")})
             if tool_name == "mnemo_feedback":
+                if not FACT_ID_RE.match(str(args.get("fact_id", ""))):
+                    return json.dumps({"error": "fact_id must be a fact id (uuid) from search/ask results"})
+                if args.get("verdict") not in ("helpful", "unhelpful"):
+                    return json.dumps({"error": "verdict must be helpful or unhelpful"})
                 res = self._client.request("POST", f"{p}/facts/{args.get('fact_id')}/feedback", {"verdict": args.get("verdict"), "note": args.get("note")})
                 return json.dumps({"id": args.get("fact_id"), "trust": res.get("trust")})
         except DaemonError as e:
             return json.dumps({"error": str(e)})
+        except (TypeError, ValueError) as e:  # malformed model-supplied arguments
+            return json.dumps({"error": f"invalid arguments: {e}"})
         return json.dumps({"error": f"unknown tool {tool_name}"})
 
     # --------------------------------------------------------------- shutdown
