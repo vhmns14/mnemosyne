@@ -5,6 +5,8 @@ import { requiresAuth, isAuthorized, sessionCookie, clearSessionCookie } from ".
 import { getDatabase, closeDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
 import { getDashboardHtml } from "./dashboard/template.ts";
+import { DeriverWorker } from "./engine/deriver.ts";
+import { handlePeerApi } from "./peer/api.ts";
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
 
 // Request body shapes for POST routes. JSON bodies are untrusted input; these
@@ -29,6 +31,10 @@ function formatBytes(bytes: number): string {
 
 const db = getDatabase();
 const engine = new MnemosyneEngine(db);
+
+// Background deriver: learns facts from queued conversation messages (no LLM on the request path).
+const deriver = new DeriverWorker(db);
+if (CONFIG.DERIVER_ENABLED) deriver.start();
 
 // SOTA 2026: Real-Time Server-Sent Events (SSE) Client Broadcaster
 const sseClients = new Set<ReadableStreamDefaultController>();
@@ -70,7 +76,7 @@ try {
 
     const corsHeaders: Record<string, string> = {
       "Access-Control-Allow-Origin": allowedOrigin,
-      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Mnemosyne-Key",
     };
 
@@ -1175,6 +1181,10 @@ try {
       }
     }
 
+    // Personal memory layer: /v1/messages, /v1/peers/*, /v1/deriver/*
+    const peerRes = await handlePeerApi(req, url, { db, worker: deriver }, corsHeaders);
+    if (peerRes) return peerRes;
+
     return Response.json(
       { error: "Not found", path: url.pathname },
       { status: 404, headers: corsHeaders }
@@ -1187,6 +1197,7 @@ try {
 
   function handleShutdown(signal: string) {
     console.log(`\n🛑 Received ${signal}. Gracefully shutting down Mnemosyne REST Daemon...`);
+    deriver.stop();
     if (server) {
       try {
         server.stop();

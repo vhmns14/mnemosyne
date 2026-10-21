@@ -7,6 +7,7 @@ import { isTransactionalNoise } from "./engine/dialectic.ts";
 import { formatBenchmarkReport } from "./engine/benchmark.ts";
 import { usageMultiplier } from "./engine/feedback.ts";
 import { getModelBudgetProfile } from "./engine/compactor.ts";
+import { runPeerCli, queueCliMessage, PEER_HELP } from "./peer/cli.ts";
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
 
 const db = getDatabase();
@@ -120,7 +121,7 @@ export async function runCli(args: string[]) {
   const command = args[0];
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
-    console.log(HELP + GROWTH_HELP);
+    console.log(HELP + GROWTH_HELP + PEER_HELP);
     return;
   }
 
@@ -171,6 +172,11 @@ export async function runCli(args: string[]) {
       to: { type: "string" },
       "min-projects": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
+      once: { type: "boolean", default: false },
+      status: { type: "boolean", default: false },
+      refresh: { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
+      depth: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -326,6 +332,8 @@ Preview what writing this would deduplicate, supersede, or keep side by side —
   const contentOrQuery = positionals.join(" ").trim();
 
   try {
+    if (await runPeerCli(db, command, positionals, values)) return;
+
     switch (command) {
       case "remember":
       case "add": {
@@ -1192,7 +1200,9 @@ Preview what writing this would deduplicate, supersede, or keep side by side —
           category: values.category as any,
           is_fact: Boolean(values.fact),
         });
+        const queued = queueCliMessage(db, contentOrQuery, values);
         console.log(`\n\x1b[32m✔ Ingested successfully!\x1b[0m`);
+        if (queued) console.log(`  Queued for deriver: \x1b[36m${queued}\x1b[0m message`);
         console.log(`  Action: \x1b[36m${res.action}\x1b[0m`);
         console.log(`  Notes ID: ${res.note_id}`);
         if (res.candidates && res.candidates.stored > 0) {

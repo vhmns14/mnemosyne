@@ -47,6 +47,21 @@ export const CONFIG = {
   LLM_API_KEY: process.env.MNEMO_LLM_KEY || "",
   LLM_MODEL: process.env.MNEMO_LLM_MODEL || "gpt-5.6-sol",
   
+  // OpenAI-compatible /v1/embeddings (takes precedence over EMBEDDING_PROVIDER when set;
+  // falls back to the local sparse-hash embedder on any failure).
+  EMBED_URL: process.env.MNEMO_EMBED_URL || "",
+  EMBED_KEY: process.env.MNEMO_EMBED_KEY || "",
+  EMBED_MODEL: process.env.MNEMO_EMBED_MODEL || "text-embedding-3-small",
+  EMBED_TIMEOUT_MS: parseInt(process.env.MNEMO_EMBED_TIMEOUT_MS || "5000", 10),
+
+  // Deriver (background learning from conversation messages)
+  DERIVER_ENABLED: process.env.MNEMO_DERIVER !== "off",
+  DERIVER_INTERVAL_MS: parseInt(process.env.MNEMO_DERIVER_INTERVAL_MS || "5000", 10),
+  DERIVER_BATCH: parseInt(process.env.MNEMO_DERIVER_BATCH || "20", 10),
+  LLM_RPM: parseInt(process.env.MNEMO_LLM_RPM || "30", 10),
+  LLM_TIMEOUT_MS: parseInt(process.env.MNEMO_LLM_TIMEOUT_MS || "60000", 10),
+  REFLECT_EVERY_FACTS: parseInt(process.env.MNEMO_REFLECT_EVERY || "20", 10),
+
   // REST API Daemon
   PORT: parseInt(process.env.MNEMO_PORT || "8788", 10),
   HOST: process.env.MNEMO_HOST || "127.0.0.1",

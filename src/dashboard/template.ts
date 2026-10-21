@@ -1,4 +1,9 @@
 import { VERSION } from "../config.ts";
+import { PEER_NAV_HTML, PEER_STYLE, PEER_SCRIPT, PEER_VIEWS_HTML } from "./peer_views.ts";
+
+function escapeHtml(s: string): string {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
 
 export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): string {
   return `<!DOCTYPE html>
@@ -750,6 +755,7 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
       overflow-x: auto;
       line-height: 1.6;
     }
+${PEER_STYLE}
   </style>
 </head>
 <body>
@@ -925,12 +931,13 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
         </div>
       </div>
 
+${PEER_NAV_HTML}
       <div class="sidebar-footer">
         <div class="workspace-box">
           <div class="workspace-icon"></div>
           <div class="workspace-info">
             <div class="workspace-title">Active Workspace</div>
-            <div class="workspace-sub">${dbPath}</div>
+            <div class="workspace-sub">${escapeHtml(dbPath)}</div>
           </div>
         </div>
       </div>
@@ -1533,6 +1540,7 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
           <pre id="pack-audit-report" style="margin:0; max-height:160px; overflow:auto; font-size:11px; color:var(--text-dim); background:#06070a;">Ready for export or import transactions.</pre>
         </div>
       </div>
+${PEER_VIEWS_HTML}
     </main>
   </div>
 
@@ -1660,7 +1668,11 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
         doctor: 'Context Doctor & Self-Healing',
         persona: 'Theory of Mind Profile',
         digest: '24h Brain Activity Digest',
-        packs: 'Portable Memory Packs Hub'
+        packs: 'Portable Memory Packs Hub',
+        'pm-profile': 'Personal Memory · Profile',
+        'pm-facts': 'Personal Memory · Facts',
+        'pm-ask': 'Personal Memory · Ask',
+        'pm-deriver': 'Personal Memory · Deriver'
       };
 
       document.getElementById('top-title').innerText = mapTitle[viewId] || 'Mnemosyne';
@@ -1686,6 +1698,8 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
         loadTimeline();
       } else if (viewId === 'compactor') {
         runCompaction();
+      } else if (viewId.indexOf('pm-') === 0) {
+        pmLoad(viewId);
       }
     }
 
@@ -1702,6 +1716,8 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
       { label: 'Jump to Retrieval Playground', action: () => switchView('recall') },
       { label: 'Jump to Context Doctor', action: () => switchView('doctor') },
       { label: 'Jump to Portable Memory Packs Hub', action: () => switchView('packs') },
+      { label: 'Jump to Personal Memory Facts', action: () => switchView('pm-facts') },
+      { label: 'Ask about the user', action: () => switchView('pm-ask') },
       { label: 'Add New Memory Belief', action: () => toggleAddModal(true) },
       { label: 'Sync Rules to AGENTS.md', action: () => syncRules('agents.md') },
       { label: 'Sync Rules to .cursorrules', action: () => syncRules('cursorrules') },
@@ -3036,6 +3052,7 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
 
     // Live auto-polling every 3.5 seconds
     setInterval(loadTelemetry, 3500);
+${PEER_SCRIPT}
   </script>
 </body>
 </html>`;

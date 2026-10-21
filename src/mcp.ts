@@ -2,6 +2,7 @@
 import { VERSION } from "./config.ts";
 import { getDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
+import { PEER_MCP_TOOLS, callPeerTool } from "./peer/mcp_tools.ts";
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
 
 const db = getDatabase();
@@ -700,7 +701,7 @@ async function handleMessage(line: string) {
   if (method === "notifications/initialized") return;
 
   if (method === "tools/list") {
-    sendJson({ jsonrpc: "2.0", id, result: { tools: TOOLS } });
+    sendJson({ jsonrpc: "2.0", id, result: { tools: [...TOOLS, ...PEER_MCP_TOOLS] } });
     return;
   }
 
@@ -1397,6 +1398,12 @@ async function handleMessage(line: string) {
       if (name === "explain_belief") {
         const explanation = await engine.why(args.claim, { limit: args.limit, min_score: args.min_score });
         sendJson({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: explanation.markdown }] } });
+        return;
+      }
+
+      const peerResult = await callPeerTool(db, name, args);
+      if (peerResult) {
+        sendJson({ jsonrpc: "2.0", id, result: peerResult });
         return;
       }
 

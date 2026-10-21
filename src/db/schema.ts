@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { initPeerSchema } from "./peer_schema.ts";
 
 export function initSchema(db: Database): void {
   // SQLite Performance & Concurrency Pragmas
@@ -503,6 +504,7 @@ export function initSchema(db: Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_candidates_status ON memory_candidates(status, created_at);
   `);
+
+  // 26. Personal memory layer (messages queue, derived facts, representations)
+  initPeerSchema(db);
 }
-
-

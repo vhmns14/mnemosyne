@@ -136,6 +136,12 @@ export function generateLocalEmbedding(text: string, dim: number = EMBEDDING_DIM
  * Always falls back gracefully to zero-overhead local embedder on failure or timeout.
  */
 export async function getEmbedding(text: string): Promise<Float32Array> {
+  // 0. Any OpenAI-compatible /v1/embeddings endpoint (OpenRouter, Ollama /v1, vLLM, LiteLLM...)
+  if (CONFIG.EMBED_URL) {
+    const remote = await fetchOpenAICompatibleEmbedding(text);
+    if (remote) return remote;
+  }
+
   const provider = (CONFIG.EMBEDDING_PROVIDER || "local").toLowerCase();
 
   // 1. Ollama (Local LLM daemon)
@@ -227,6 +233,40 @@ export async function getEmbedding(text: string): Promise<Float32Array> {
 
   // 4. Default: Zero-overhead deterministic local embedder (384-d, <0.2ms latency)
   return generateLocalEmbedding(text, EMBEDDING_DIM);
+}
+
+/** Accepts either a base URL (".../v1") or the full ".../embeddings" endpoint. */
+export function resolveEmbeddingsUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  return /\/embeddings$/.test(trimmed) ? trimmed : `${trimmed}/embeddings`;
+}
+
+/**
+ * MNEMO_EMBED_URL / MNEMO_EMBED_KEY / MNEMO_EMBED_MODEL. Returns null on any failure
+ * so the caller falls back to the local sparse-hash embedder. Note: vectors from
+ * different models have different dimensions; cosineSimilarity() returns 0 across
+ * mismatched spaces, so mixing providers degrades (but never corrupts) recall.
+ */
+export async function fetchOpenAICompatibleEmbedding(text: string): Promise<Float32Array | null> {
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (CONFIG.EMBED_KEY) headers.Authorization = `Bearer ${CONFIG.EMBED_KEY}`;
+    const res = await fetch(resolveEmbeddingsUrl(CONFIG.EMBED_URL), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: CONFIG.EMBED_MODEL, input: text }),
+      signal: AbortSignal.timeout(CONFIG.EMBED_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { data?: Array<{ embedding?: unknown }> };
+    const rawVec = data.data?.[0]?.embedding;
+    if (!Array.isArray(rawVec) || rawVec.length === 0 || !rawVec.every((x) => typeof x === "number")) return null;
+    const vec = new Float32Array(rawVec as number[]);
+    normalizeVector(vec);
+    return vec;
+  } catch {
+    return null;
+  }
 }
 
 /**
