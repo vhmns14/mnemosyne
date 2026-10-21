@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { searchHybrid } from "./hybrid.ts";
-import { getEmbedding, cosineSimilarity, decodeVector } from "./embedder.ts";
+import { getEmbedding, cosineSimilarity, decodeVectorFor, embeddingModelOf } from "./embedder.ts";
 import { cardFacts, getFactRow, listFacts, renderTier, truncateTokens, estimateTokens, type FactRow, type Tier, type TieredItem } from "./facts.ts";
 import { fenceContext, getFenceNonce, PEER_RE } from "./messages.ts";
 import { redactSecrets } from "./redact.ts";
@@ -55,11 +55,11 @@ const RECALL_STOP = new Set(
 async function directPeerScores(db: Database, peer: string, query: string): Promise<Array<{ id: string; score: number }>> {
   const rows = db
     .query(
-      `SELECT m.id, m.content, v.vector FROM derived_facts d JOIN memories m ON m.id = d.memory_id
+      `SELECT m.id, m.content, v.vector, v.model AS vmodel FROM derived_facts d JOIN memories m ON m.id = d.memory_id
        LEFT JOIN memory_vectors v ON v.memory_id = m.id
        WHERE d.peer = ? AND m.is_active = 1 ORDER BY d.updated_at DESC LIMIT 500`
     )
-    .all(peer) as Array<{ id: string; content: string; vector: any }>;
+    .all(peer) as Array<{ id: string; content: string; vector: any; vmodel: string | null }>;
   if (rows.length === 0) return [];
   const toks = (t: string) =>
     new Set(
@@ -75,7 +75,7 @@ async function directPeerScores(db: Database, peer: string, query: string): Prom
   const qv = await getEmbedding(query);
   const out: Array<{ id: string; score: number }> = [];
   for (const r of rows) {
-    const v = decodeVector(r.vector);
+    const v = decodeVectorFor(r.vector, r.vmodel, embeddingModelOf(qv));
     const cos = v ? Math.max(0, cosineSimilarity(qv, v)) : 0;
     const ft = toks(r.content);
     let inter = 0;

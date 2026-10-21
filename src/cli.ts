@@ -62,6 +62,7 @@ COMMANDS:
   block [list|get|set]  Dynamic working memory blocks (Letta style self-editing)
   rollup [session_id]   Condense episodic micro-logs into a Decision Ledger macro-fact
   route <prompt>        Zero-LLM fast deterministic intent router (< 0.02ms)
+  reembed [--dry-run]   Re-embed vectors from another/unknown model (--force: all, --limit n)
   anchor <id> <file#s>  Anchor memory to file or specific symbol (function/class)
   preflight <cmd>       Evaluate shell command against RAM & negative constraints
   upsert <s> <p> <o>    Upsert semantic triple with automatic conflict resolution
@@ -1360,6 +1361,21 @@ Preview what writing this would deduplicate, supersede, or keep side by side —
           if (deleted) console.log(`\x1b[32m✔ Block '${blockName}' deleted successfully!\x1b[0m`);
           else console.log(`\x1b[33mBlock '${blockName}' not found.\x1b[0m`);
         }
+        break;
+      }
+
+      case "reembed": {
+        const { reembedMismatched } = await import("./engine/reembed.ts");
+        const rep = await reembedMismatched(db, {
+          dryRun: Boolean(values["dry-run"]),
+          all: Boolean(values.force),
+          limit: values.limit && values.limit !== "5" ? parseInt(values.limit, 10) : undefined,
+        });
+        console.log(`\n🧬 Re-embed → target model: ${rep.target_model}`);
+        console.log(`  Mismatched/missing: ${rep.mismatched}  ${JSON.stringify(rep.by_model)}`);
+        if (rep.dry_run) console.log("  (dry run: nothing written)");
+        else console.log(`  Re-embedded: ${rep.reembedded}  Failed (provider fell back): ${rep.failed}${rep.stopped_early ? "  — stopped early, provider unreachable" : ""}`);
+        console.log("");
         break;
       }
 

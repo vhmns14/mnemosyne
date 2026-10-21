@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { CONFIG } from "../config.ts";
 import { computeFingerprint } from "./dialectic.ts";
-import { getEmbedding, cosineSimilarity, decodeVector } from "./embedder.ts";
+import { getEmbedding, cosineSimilarity, decodeVectorFor, embeddingModelOf } from "./embedder.ts";
 import {
   addDerivedFact,
   cardFacts,
@@ -241,11 +241,11 @@ export async function similarFacts(db: Database, peer: string, content: string, 
   const fp = computeFingerprint(content);
   const rows = db
     .query(
-      `SELECT m.id, m.content, m.fingerprint, v.vector FROM derived_facts d
+      `SELECT m.id, m.content, m.fingerprint, v.vector, v.model AS vmodel FROM derived_facts d
        JOIN memories m ON m.id = d.memory_id LEFT JOIN memory_vectors v ON v.memory_id = m.id
        WHERE d.peer = ? AND m.is_active = 1 ORDER BY d.updated_at DESC LIMIT 2000`
     )
-    .all(peer) as Array<{ id: string; content: string; fingerprint: string; vector: any }>;
+    .all(peer) as Array<{ id: string; content: string; fingerprint: string; vector: any; vmodel: string | null }>;
   if (rows.length === 0) return [];
   const exact = rows.find((r) => r.fingerprint === fp);
   if (exact) return [{ id: exact.id, content: exact.content, sim: 1 }];
@@ -253,7 +253,7 @@ export async function similarFacts(db: Database, peer: string, content: string, 
   const qt = contentTokens(content, peer);
   const scored: Array<Neighbor & { score: number }> = [];
   for (const r of rows) {
-    const v = decodeVector(r.vector);
+    const v = decodeVectorFor(r.vector, r.vmodel, embeddingModelOf(qv));
     const sim = v ? cosineSimilarity(qv, v) : 0;
     const lex = jaccard(qt, contentTokens(r.content, peer));
     const score = Math.max(sim, 0.5 * sim + 0.5 * Math.min(1, lex * 2));

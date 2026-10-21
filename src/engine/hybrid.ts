@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { CONFIG } from "../config.ts";
-import { cosineSimilarity, decodeVector, getEmbedding, STOPWORDS } from "./embedder.ts";
+import { cosineSimilarity, decodeVectorFor, embeddingModelOf, getEmbedding, LOCAL_EMBEDDING_MODEL, STOPWORDS } from "./embedder.ts";
 import { sweepExpiredFacts } from "./dialectic.ts";
 import { getUsageMap, usageMultiplier } from "./feedback.ts";
 import type { MemoryRecord, RecallOptions, ScoredMemory } from "../types.ts";
@@ -130,7 +130,7 @@ export async function searchHybrid(
 
   // 4. Fetch active candidate memories with bi-temporal filtering
   let sql = `
-    SELECT m.*, v.vector as vector_blob
+    SELECT m.*, v.vector as vector_blob, v.model as vector_model
     FROM memories m
     LEFT JOIN memory_vectors v ON m.id = v.memory_id
     WHERE ${options.include_expired ? "(m.is_active = 1 OR m.status = 'expired')" : "m.is_active = 1"}
@@ -157,8 +157,10 @@ export async function searchHybrid(
 
   // 5. Calculate Scored Memories with Relevance Gating
   const scoredMemories: ScoredMemory[] = [];
-  const provider = (CONFIG.EMBEDDING_PROVIDER || "local").toLowerCase();
-  const isSemanticProvider = provider !== "local";
+  // Weight by the model that actually produced the query vector: a remote provider
+  // that fell back to the local sparse embedder must be scored as local.
+  const queryModel = queryVec ? embeddingModelOf(queryVec) : null;
+  const isSemanticProvider = queryModel !== null && queryModel !== LOCAL_EMBEDDING_MODEL;
 
   // Dynamic weighting:
   // - Local provider (sparse feature hash): BM25 is primary lexical signal (0.60 vs 0.10)
@@ -173,7 +175,7 @@ export async function searchHybrid(
     // A. Vector Score
     let vectorScore = 0;
     if (queryVec && row.vector_blob) {
-      const memVec = decodeVector(row.vector_blob);
+      const memVec = decodeVectorFor(row.vector_blob, row.vector_model, queryModel!);
       if (memVec) {
         vectorScore = Math.max(0, cosineSimilarity(queryVec, memVec));
       }

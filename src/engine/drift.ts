@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { cosineSimilarity, decodeVector, getEmbedding } from "./embedder.ts";
+import { cosineSimilarity, decodeVector, embeddingModelOf, getEmbedding } from "./embedder.ts";
 import type { DriftAlert } from "../types.ts";
 
 /**
@@ -19,9 +19,9 @@ export async function detectSemanticDrift(
       `SELECT m.id, m.content, v.vector 
        FROM memories m 
        JOIN memory_vectors v ON m.id = v.memory_id 
-       WHERE m.is_active = 1`
+       WHERE m.is_active = 1 AND v.model = ?`
     )
-    .all() as any[];
+    .all(embeddingModelOf(incomingVec)) as any[];
 
   let highestSim = 0;
   let mostSimilarId: string | undefined;

@@ -2,6 +2,53 @@ import { CONFIG } from "../config.ts";
 
 export const EMBEDDING_DIM = 384;
 
+/**
+ * Embedding model identity. Every stored vector records the model that produced it
+ * (memory_vectors.model) and similarity is only ever computed between vectors of the
+ * same model: a silent fallback to the local embedder, or a provider switch, must
+ * never make cosine scores across two unrelated latent spaces (same dimension does
+ * not mean same space).
+ */
+export const LOCAL_EMBEDDING_MODEL = "local:sparse-hash-384";
+const vectorModels = new WeakMap<Float32Array, string>();
+
+function tag(vec: Float32Array, model: string): Float32Array {
+  vectorModels.set(vec, model);
+  return vec;
+}
+
+/** Model a freshly computed vector came from (untagged = local embedder). */
+export function embeddingModelOf(vec: Float32Array): string {
+  return vectorModels.get(vec) || LOCAL_EMBEDDING_MODEL;
+}
+
+/** The model getEmbedding() produces when its configured provider answers. */
+export function configuredEmbeddingModel(): string {
+  if (CONFIG.EMBED_URL) return `compat:${CONFIG.EMBED_MODEL}`;
+  const provider = (CONFIG.EMBEDDING_PROVIDER || "local").toLowerCase();
+  if (provider === "ollama" && CONFIG.OLLAMA_HOST) return `ollama:${CONFIG.OLLAMA_MODEL}`;
+  if (provider === "openai" && CONFIG.OPENAI_API_KEY) return `openai:${CONFIG.OPENAI_EMBEDDING_MODEL}`;
+  if (provider === "albatross" && CONFIG.ALBATROSS_URL) return "albatross:text-embedding-3-small";
+  return LOCAL_EMBEDDING_MODEL;
+}
+
+/**
+ * Decode a stored vector only when it was produced by `wantModel`; otherwise null,
+ * so callers fall back to their lexical/sparse path for that row.
+ */
+export function decodeVectorFor(blob: any, rowModel: string | null | undefined, wantModel: string): Float32Array | null {
+  if (!rowModel || rowModel !== wantModel) return null;
+  return decodeVector(blob);
+}
+
+/** Persist a vector with the model that produced it. */
+export function storeVector(db: { prepare: (sql: string) => { run: (...a: any[]) => unknown } }, memoryId: string, vec: Float32Array): void {
+  const buffer = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+  db.prepare(
+    "INSERT OR REPLACE INTO memory_vectors (memory_id, vector, dimension, model) VALUES (?, ?, ?, ?)"
+  ).run(memoryId, buffer, vec.length, embeddingModelOf(vec));
+}
+
 // Multilingual Stopwords (EN + ID) to reduce semantic noise
 export const STOPWORDS = new Set([
   // English
@@ -139,7 +186,7 @@ export async function getEmbedding(text: string): Promise<Float32Array> {
   // 0. Any OpenAI-compatible /v1/embeddings endpoint (OpenRouter, Ollama /v1, vLLM, LiteLLM...)
   if (CONFIG.EMBED_URL) {
     const remote = await fetchOpenAICompatibleEmbedding(text);
-    if (remote) return remote;
+    if (remote) return tag(remote, `compat:${CONFIG.EMBED_MODEL}`);
   }
 
   const provider = (CONFIG.EMBEDDING_PROVIDER || "local").toLowerCase();
@@ -164,7 +211,7 @@ export async function getEmbedding(text: string): Promise<Float32Array> {
         if (Array.isArray(rawVec) && rawVec.length > 0) {
           const vec = new Float32Array(rawVec);
           normalizeVector(vec);
-          return vec;
+          return tag(vec, `ollama:${CONFIG.OLLAMA_MODEL}`);
         }
       }
     } catch {
@@ -195,7 +242,7 @@ export async function getEmbedding(text: string): Promise<Float32Array> {
         if (Array.isArray(rawVec) && rawVec.length > 0) {
           const vec = new Float32Array(rawVec);
           normalizeVector(vec);
-          return vec;
+          return tag(vec, `openai:${CONFIG.OPENAI_EMBEDDING_MODEL}`);
         }
       }
     } catch {
@@ -228,7 +275,7 @@ export async function getEmbedding(text: string): Promise<Float32Array> {
         if (Array.isArray(rawVec) && rawVec.length > 0) {
           const vec = new Float32Array(rawVec);
           normalizeVector(vec);
-          return vec;
+          return tag(vec, "albatross:text-embedding-3-small");
         }
       }
     } catch {

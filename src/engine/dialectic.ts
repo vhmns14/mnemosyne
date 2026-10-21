@@ -8,7 +8,7 @@ import type {
   RememberOptions, FactInput, UpsertFactResult, DeleteBySourceOptions, DeleteBySourceResult,
   IngestOptions, IngestResult, HermesStats, MemoryScope, MemoryCategory
 } from "../types.ts";
-import { getEmbedding, cosineSimilarity, decodeVector } from "./embedder.ts";
+import { getEmbedding, cosineSimilarity, decodeVector, decodeVectorFor, embeddingModelOf, storeVector } from "./embedder.ts";
 import { recordMemoryEvent } from "./doctor.ts";
 import { redactSecrets } from "./redact.ts";
 import { canonicalizeEntity, getAliasMap } from "./canonical.ts";
@@ -275,14 +275,14 @@ try {
   if (!options.supersedes_query) {
     try {
       const activeRows = db.query(`
-        SELECT m.id, m.content, m.access_count, m.tags, m.is_negative_constraint, v.vector 
+        SELECT m.id, m.content, m.access_count, m.tags, m.is_negative_constraint, v.vector, v.model AS vmodel
         FROM memories m
         JOIN memory_vectors v ON m.id = v.memory_id
         WHERE m.is_active = 1 
           AND (m.scope = ? OR m.scope = 'global')
           AND m.category = ?
           AND (? = 0 OR m.peer = ?)
-      `).all(scope, category, options.strict_peer ? 1 : 0, peer) as Array<{ id: string; content: string; access_count: number; tags: string; is_negative_constraint?: number; vector: any }>;
+      `).all(scope, category, options.strict_peer ? 1 : 0, peer) as Array<{ id: string; content: string; access_count: number; tags: string; is_negative_constraint?: number; vector: any; vmodel: string | null }>;
 
       let highestSim = 0;
       let bestMatch: { id: string; content: string; access_count: number; tags: string } | null = null;
@@ -298,7 +298,8 @@ try {
           break;
         }
 
-        const rowVec = decodeVector(row.vector);
+        // Only same-model vectors are comparable; other rows keep the exact-text check above.
+        const rowVec = decodeVectorFor(row.vector, row.vmodel, embeddingModelOf(vector));
         if (rowVec) {
           const sim = cosineSimilarity(vector, rowVec);
           if (sim > highestSim) {
@@ -393,11 +394,7 @@ try {
   }
 
   // 5. Store vector embedding
-  const buffer = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
-  db.prepare(`
-    INSERT OR REPLACE INTO memory_vectors (memory_id, vector, dimension)
-    VALUES (?, ?, ?)
-  `).run(id, buffer, vector.length);
+  storeVector(db, id, vector);
 
   // 6. Ingest Triples & Automatic Conflict Resolution for Triples
   const extracted = options.entities || extractTriples(content);
@@ -595,9 +592,10 @@ export async function detectConflicts(
         `SELECT m.id, m.content, v.vector FROM memories m
          JOIN memory_vectors v ON m.id = v.memory_id
          WHERE m.is_active = 1 AND (m.scope = ? OR m.scope = 'global') AND m.category = ?
+           AND v.model = ?
          LIMIT 200`
       )
-      .all(scope, category) as Array<{ id: string; content: string; vector: Uint8Array }>;
+      .all(scope, category, embeddingModelOf(vector)) as Array<{ id: string; content: string; vector: Uint8Array }>;
 
     for (const row of rows) {
       const rowVector = decodeVector(row.vector);

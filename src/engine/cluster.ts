@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { cosineSimilarity, decodeVector } from "./embedder.ts";
+import { configuredEmbeddingModel, cosineSimilarity, decodeVector } from "./embedder.ts";
 import type { TopicCluster } from "../types.ts";
 
 /**
@@ -12,9 +12,9 @@ export function clusterMemories(db: Database, similarityThreshold: number = 0.55
       `SELECT m.id, m.content, m.category, v.vector 
        FROM memories m 
        JOIN memory_vectors v ON m.id = v.memory_id 
-       WHERE m.is_active = 1`
+       WHERE m.is_active = 1 AND v.model = ?`
     )
-    .all() as any[];
+    .all(configuredEmbeddingModel()) as any[];
 
   if (rows.length === 0) return [];
 

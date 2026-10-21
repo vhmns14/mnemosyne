@@ -1,5 +1,37 @@
+import { configuredEmbeddingModel, cosineSimilarity, decodeVector, EMBEDDING_DIM, generateLocalEmbedding, LOCAL_EMBEDDING_MODEL } from "../engine/embedder.ts";
 import type { Database } from "bun:sqlite";
 import { initPeerSchema } from "./peer_schema.ts";
+
+/**
+ * memory_vectors.model (per-vector embedding model id). Pre-existing DBs gain the
+ * column; legacy rows are attributed once: a 384-d vector that the local embedder
+ * reproduces exactly from the stored content is local; any other legacy vector is
+ * attributed to the remote model configured at upgrade time (README told users never
+ * to switch models on an existing DB), or 'legacy:unknown' when none is configured.
+ * `mnemo reembed` re-embeds whatever does not match the current model.
+ */
+export function migrateVectorModels(db: Database): void {
+  const cols = db.query("PRAGMA table_info(memory_vectors)").all().map((c: any) => c.name);
+  if (!cols.includes("model")) db.exec("ALTER TABLE memory_vectors ADD COLUMN model TEXT;");
+  const pending = db.query("SELECT COUNT(*) AS n FROM memory_vectors WHERE model IS NULL").get() as { n: number };
+  if (!pending?.n) return;
+  const configured = configuredEmbeddingModel();
+  const fallback = configured === LOCAL_EMBEDDING_MODEL ? "legacy:unknown" : configured;
+  const rows = db
+    .query("SELECT v.memory_id, v.vector, v.dimension, m.content FROM memory_vectors v LEFT JOIN memories m ON m.id = v.memory_id WHERE v.model IS NULL")
+    .all() as Array<{ memory_id: string; vector: any; dimension: number; content: string | null }>;
+  const upd = db.prepare("UPDATE memory_vectors SET model = ? WHERE memory_id = ?");
+  db.transaction(() => {
+    for (const r of rows) {
+      let model = fallback;
+      if (r.dimension === EMBEDDING_DIM && r.content != null) {
+        const stored = decodeVector(r.vector);
+        if (stored && cosineSimilarity(stored, generateLocalEmbedding(r.content)) > 0.9999) model = LOCAL_EMBEDDING_MODEL;
+      }
+      upd.run(model, r.memory_id);
+    }
+  })();
+}
 
 export function initSchema(db: Database): void {
   // SQLite Performance & Concurrency Pragmas
@@ -111,9 +143,11 @@ export function initSchema(db: Database): void {
       memory_id TEXT PRIMARY KEY,
       vector BLOB NOT NULL,
       dimension INTEGER NOT NULL,
+      model TEXT,
       FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
     );
   `);
+  migrateVectorModels(db);
 
   // 3. SQLite FTS5 Full-Text Search Table (Lexical Search) & Automatic Sync Triggers
   db.exec(`

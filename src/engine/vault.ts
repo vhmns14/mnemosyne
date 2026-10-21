@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { getEmbedding } from "./embedder.ts";
+import { getEmbedding, storeVector } from "./embedder.ts";
 import { detectWorkspace } from "./workspace.ts";
 import { recordMemoryEvent } from "./doctor.ts";
 import type { 
@@ -434,8 +434,7 @@ export async function importVault(db: Database, customDir?: string): Promise<Vau
 
           // Update vector
           const vec = await getEmbedding(content);
-          db.prepare("INSERT OR REPLACE INTO memory_vectors (memory_id, vector, dimension) VALUES (?, ?, ?)")
-            .run(memId, Buffer.from(vec.buffer), vec.length);
+          storeVector(db, memId, vec);
 
           recordMemoryEvent(db, memId, "MUTATED", JSON.stringify({ source: "vault_import", file: path.basename(filePath) }));
           updated++;
@@ -471,8 +470,7 @@ export async function importVault(db: Database, customDir?: string): Promise<Vau
 
         // Insert vector
         const vec = await getEmbedding(content);
-        db.prepare("INSERT OR REPLACE INTO memory_vectors (memory_id, vector, dimension) VALUES (?, ?, ?)")
-          .run(memId, Buffer.from(vec.buffer), vec.length);
+        storeVector(db, memId, vec);
 
         recordMemoryEvent(db, memId, "CREATED", JSON.stringify({ source: "vault_import", file: path.basename(filePath) }));
         added++;

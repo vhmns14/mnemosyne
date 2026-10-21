@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { getEmbedding } from "./embedder.ts";
+import { getEmbedding, storeVector } from "./embedder.ts";
 import type { RollupOptions, RollupResult } from "../types.ts";
 
 /**
@@ -203,11 +203,7 @@ export async function rollupSessionMemories(
   // Generate and insert vector embedding
   try {
     const vec = await getEmbedding(ledgerMarkdown);
-    const blob = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
-    db.query(`
-      INSERT INTO memory_vectors (memory_id, vector, dimension)
-      VALUES (?, ?, ?)
-    `).run(macroMemoryId, blob, vec.length);
+    storeVector(db, macroMemoryId, vec);
   } catch {
     // Vector embedding optional fallback
   }
