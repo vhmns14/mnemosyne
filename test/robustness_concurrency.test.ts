@@ -4,7 +4,7 @@
  */
 import { describe, expect, test, beforeEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "node:fs";
+import { rmSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initSchema } from "../src/db/schema.ts";
@@ -79,6 +79,7 @@ describe("concurrent processes on one file", () => {
     const check = new Database(file, { readonly: true });
     expect((check.query("SELECT COUNT(*) c FROM messages").get() as any).c).toBe(160);
     check.close();
+    rmSync(dir, { recursive: true, force: true });
   }, 30000);
 });
 

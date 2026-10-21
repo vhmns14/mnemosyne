@@ -29,7 +29,7 @@ describe("Mnemosyne SOTA 2026: 1-Bit BQ & Episodic Rollup Suite", () => {
 
   afterEach(() => {
     db.close();
-    if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
+    for (const f of [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`]) if (existsSync(f)) unlinkSync(f);
   });
 
   // ==========================================

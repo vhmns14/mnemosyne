@@ -24,7 +24,7 @@ describe("Mnemosyne SOTA 2026: Symbol Anchoring, Intent Router & SSE Suite", () 
 
   afterEach(() => {
     db.close();
-    if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
+    for (const f of [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`]) if (existsSync(f)) unlinkSync(f);
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
   });
 

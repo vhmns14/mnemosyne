@@ -341,6 +341,8 @@ describe("files at rest", () => {
     const files = walk(join(dir, "vault"));
     expect(files.length).toBeGreaterThan(1);
     for (const f of files) expect(statSync(f).mode & 0o777).toBe(0o600);
+    fileDb.close();
+    (await import("node:fs")).rmSync(dir, { recursive: true, force: true });
   });
 
   test("an empty store can still export a vault (used to ENOENT on README)", async () => {
@@ -350,6 +352,7 @@ describe("files at rest", () => {
     const { exportVault } = await import("../src/engine/vault.ts");
     const dir = mkdtempSync(join(tmpdir(), "mnemo-empty-"));
     expect(() => exportVault(db, join(dir, "v"))).not.toThrow();
+    (await import("node:fs")).rmSync(dir, { recursive: true, force: true });
   });
 });
 
