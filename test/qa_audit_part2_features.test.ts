@@ -255,7 +255,7 @@ describe("Audit Part 2: session lifecycle, usage feedback, growth queue, conflic
     expect(clean.redacted).toBe(0);
     expect(clean.text).toBe("Never run parallel builds on the 16GB laptop");
 
-    const preview = engine.scrub("export GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123");
+    const preview = engine.scrub("export GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"); // gitleaks:allow (fake token, redaction fixture)
     expect(preview.redacted).toBeGreaterThan(0);
     expect(preview.text).not.toContain("ghp_");
 
