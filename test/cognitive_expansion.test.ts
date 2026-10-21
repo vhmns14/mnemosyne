@@ -105,17 +105,18 @@ describe("Mnemosyne Cognitive Expansion: 6 Core Next-Gen Capabilities", () => {
       const anchor = engine.anchorMemory(memId, testFile, tmpDir);
       expect(anchor.file_path).toBe("config.json");
 
+      // Engine-level caller (like the CLI) trusts its own dir; API callers only trust MNEMO_WORKSPACE_ROOTS.
       // Initially fresh
-      const checkFresh = engine.checkStaleness(memId);
+      const checkFresh = engine.checkStaleness(memId, { extraRoots: [tmpDir] });
       expect(checkFresh.status).toBe("fresh");
 
       // Modify file
       fs.writeFileSync(testFile, JSON.stringify({ port: 9090, updated: true }));
-      const checkStale = engine.checkStaleness(memId);
+      const checkStale = engine.checkStaleness(memId, { extraRoots: [tmpDir] });
       expect(checkStale.status).toBe("stale");
 
       // Scan workspace
-      const report = engine.scanStaleness();
+      const report = engine.scanStaleness({ extraRoots: [tmpDir] });
       expect(report.total_anchored).toBe(1);
       expect(report.stale_count).toBe(1);
       expect(report.stale_items[0].memory_id).toBe(memId);

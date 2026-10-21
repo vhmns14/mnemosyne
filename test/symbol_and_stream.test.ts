@@ -125,7 +125,7 @@ export function otherHelper(): string {
     expect(anchor.symbol_hash).toBeTruthy();
 
     // Check staleness initially -> fresh
-    const check1 = engine.checkStaleness(memId);
+    const check1 = engine.checkStaleness(memId, { extraRoots: [process.cwd()] });
     expect(check1.status).toBe("fresh");
 
     // Scenario A: Unrelated lines change (e.g. edit otherHelper or comments)
@@ -143,7 +143,7 @@ export function otherHelper(): string {
     writeFileSync(filePath, unrelatedEdit, "utf-8");
 
     // Staleness check: Should STILL be fresh because processPayment didn't change!
-    const check2 = engine.checkStaleness(memId);
+    const check2 = engine.checkStaleness(memId, { extraRoots: [process.cwd()] });
     expect(check2.status).toBe("fresh");
     expect(check2.reason).toContain("matches anchor state");
 
@@ -162,7 +162,7 @@ export function otherHelper(): string {
     writeFileSync(filePath, symbolEdit, "utf-8");
 
     // Staleness check: Should now be STALE!
-    const check3 = engine.checkStaleness(memId);
+    const check3 = engine.checkStaleness(memId, { extraRoots: [process.cwd()] });
     expect(check3.status).toBe("stale");
     expect(check3.reason).toContain("content has changed");
 
@@ -174,7 +174,7 @@ export function otherHelper(): string {
 `;
     writeFileSync(filePath, symbolRemoved, "utf-8");
 
-    const check4 = engine.checkStaleness(memId);
+    const check4 = engine.checkStaleness(memId, { extraRoots: [process.cwd()] });
     expect(check4.status).toBe("stale");
     expect(check4.reason).toContain("was removed or renamed");
   });

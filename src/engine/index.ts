@@ -23,7 +23,7 @@ import { installGitHook, uninstallGitHook } from "./hook.ts";
 import { generateSessionPrimer } from "./primer.ts";
 import { evaluatePreflight } from "./firewall.ts";
 import { recordTrajectory, calibrateTool, listTrajectories } from "./trajectory.ts";
-import { anchorMemory, checkMemoryStaleness, scanWorkspaceStaleness } from "./staleness.ts";
+import { anchorMemory, checkMemoryStaleness, scanWorkspaceStaleness, type AnchorTrustOptions } from "./staleness.ts";
 import { runDreamerPass, runHermesDreamerPass } from "./dreamer.ts";
 import { BlackboardManager } from "./blackboard.ts";
 import { L1HotCache } from "./cache.ts";
@@ -573,22 +573,22 @@ export class MnemosyneEngine {
   /**
    * Anchors a memory to a codebase file and Git state, with optional symbol-level granularity.
    */
-  anchorMemory(memoryId: string, filePath: string, repoPath?: string, symbolName?: string): GitAnchorRecord {
-    return anchorMemory(this.db, memoryId, filePath, repoPath, symbolName);
+  anchorMemory(memoryId: string, filePath: string, repoPath?: string, symbolName?: string, opts?: { allowGitDir?: (realPath: string) => boolean }): GitAnchorRecord {
+    return anchorMemory(this.db, memoryId, filePath, repoPath, symbolName, opts);
   }
 
   /**
    * Checks staleness of an anchored memory.
    */
-  checkStaleness(memoryId: string): { status: StalenessStatus; reason: string; anchor?: GitAnchorRecord } {
-    return checkMemoryStaleness(this.db, memoryId);
+  checkStaleness(memoryId: string, opts?: AnchorTrustOptions): { status: StalenessStatus; reason: string; anchor?: GitAnchorRecord } {
+    return checkMemoryStaleness(this.db, memoryId, opts);
   }
 
   /**
    * Scans all anchored memories across workspace for code staleness.
    */
-  scanStaleness(): StalenessReport {
-    return scanWorkspaceStaleness(this.db);
+  scanStaleness(opts?: AnchorTrustOptions): StalenessReport {
+    return scanWorkspaceStaleness(this.db, opts);
   }
 
   /**

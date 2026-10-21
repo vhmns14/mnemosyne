@@ -2,8 +2,10 @@ import type { Database } from "bun:sqlite";
 import type { GitAnchorRecord, StalenessReport, StalenessStatus } from "../types.ts";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { resolve, relative } from "node:path";
-import { safeGit } from "./safe_paths.ts";
+import { resolve, relative, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { readGitHead } from "./git_files.ts";
+import { allowedApiDirs, realpathLoose } from "./safe_paths.ts";
 
 function computeFileHash(filePath: string): string | undefined {
   try {
@@ -16,12 +18,62 @@ function computeFileHash(filePath: string): string | undefined {
   }
 }
 
-function getGitCommitHash(filePath: string, repoPath: string): string {
-  // Hardened: no shell, hostile repo config neutralised, timeout (see safe_paths.ts).
-  const res = safeGit(["log", "-n", "1", "--format=%H", "--no-ext-diff", "--no-show-signature", "--", filePath], repoPath);
-  const hash = res.exitCode === 0 ? res.stdout.trim() : "";
-  if (/^[0-9a-f]{40}$/.test(hash)) return hash;
-  return "uncommitted-local";
+/**
+ * Commit the anchor was taken against: HEAD of the repo, read straight from the .git
+ * files (HEAD, loose refs, packed-refs, worktree gitdir/commondir). No git process is
+ * spawned, so a hostile repo config can never execute anything on this path.
+ */
+function getHeadCommit(repoPath: string, allow?: (p: string) => boolean): string {
+  const head = readGitHead(repoPath, allow);
+  return head?.sha ?? "uncommitted-local";
+}
+
+function isInsideDir(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
+/**
+ * Who is reading the anchors. "api" (REST, MCP, daemon background work; the default)
+ * only trusts anchors whose realpath is inside MNEMO_WORKSPACE_ROOTS or the data dir.
+ * The CLI may add the user's own cwd via extraRoots.
+ */
+export interface AnchorTrustOptions {
+  extraRoots?: string[];
+}
+
+function trustedDirs(opts: AnchorTrustOptions = {}): string[] {
+  const dirs = allowedApiDirs();
+  for (const r of opts.extraRoots || []) {
+    try { dirs.push(realpathSync(resolve(r))); } catch {}
+  }
+  return dirs;
+}
+
+/**
+ * Re-validate a stored anchor against the roots in force *now*. Returns the absolute
+ * realpath of the file to open, or an untrusted reason. Older rows, CLI-made rows or a
+ * tampered DB can point anywhere; such anchors are never opened or hashed.
+ */
+export function validateStoredAnchor(anchor: Pick<GitAnchorRecord, "repo_path" | "file_path">, opts: AnchorTrustOptions = {}): { ok: true; absPath: string; repo: string } | { ok: false; reason: string } {
+  if (typeof anchor.repo_path !== "string" || typeof anchor.file_path !== "string" || anchor.repo_path.includes("\0") || anchor.file_path.includes("\0")) {
+    return { ok: false, reason: "Anchor path is malformed." };
+  }
+  let repo: string;
+  let abs: string;
+  try {
+    repo = realpathLoose(resolve(anchor.repo_path));
+    abs = realpathLoose(resolve(repo, anchor.file_path));
+  } catch {
+    return { ok: false, reason: "Anchor path cannot be resolved." };
+  }
+  const dirs = trustedDirs(opts);
+  if (!dirs.some((d) => isInsideDir(repo, d))) {
+    return { ok: false, reason: `Anchor repo '${anchor.repo_path}' is outside the configured workspace roots (MNEMO_WORKSPACE_ROOTS); not opened.` };
+  }
+  if (abs === repo || !isInsideDir(abs, repo)) {
+    return { ok: false, reason: `Anchor file '${anchor.file_path}' escapes its repo; not opened.` };
+  }
+  return { ok: true, absPath: abs, repo };
 }
 
 /**
@@ -125,7 +177,8 @@ export function anchorMemory(
   memoryId: string,
   filePath: string,
   repoPath: string = process.cwd(),
-  symbolName?: string
+  symbolName?: string,
+  opts: { allowGitDir?: (realPath: string) => boolean } = {}
 ): GitAnchorRecord {
   let targetFile = filePath;
   let targetSymbol = symbolName;
@@ -152,7 +205,7 @@ export function anchorMemory(
       const stats = statSync(absPath);
       fileMtime = Math.floor(stats.mtimeMs);
       fileHash = computeFileHash(absPath);
-      commitHash = getGitCommitHash(relPath, repoPath);
+      commitHash = getHeadCommit(repoPath, opts.allowGitDir);
 
       if (targetSymbol) {
         const content = readFileSync(absPath, "utf-8");
@@ -217,7 +270,8 @@ export function anchorMemory(
  */
 export function checkMemoryStaleness(
   db: Database,
-  memoryId: string
+  memoryId: string,
+  opts: AnchorTrustOptions = {}
 ): { status: StalenessStatus; reason: string; anchor?: GitAnchorRecord } {
   const anchor = db.query(`
     SELECT * FROM memory_git_anchors WHERE memory_id = ?
@@ -227,7 +281,12 @@ export function checkMemoryStaleness(
     return { status: "fresh", reason: "Memory is not anchored to any codebase file." };
   }
 
-  const absPath = resolve(anchor.repo_path, anchor.file_path);
+  const trust = validateStoredAnchor(anchor, opts);
+  if (!trust.ok) {
+    // Reported, never opened or hashed; the stored row is left as it is.
+    return { status: "untrusted", reason: trust.reason, anchor: { ...anchor, status: "untrusted" } };
+  }
+  const absPath = trust.absPath;
   const now = Date.now();
 
   if (!existsSync(absPath)) {
@@ -330,15 +389,16 @@ export function checkMemoryStaleness(
 /**
  * Scan all anchored memories across workspace
  */
-export function scanWorkspaceStaleness(db: Database): StalenessReport {
+export function scanWorkspaceStaleness(db: Database, opts: AnchorTrustOptions = {}): StalenessReport {
   const anchors = db.query(`SELECT * FROM memory_git_anchors`).all() as GitAnchorRecord[];
   let freshCount = 0;
   let staleCount = 0;
   let unlinkedCount = 0;
+  let untrustedCount = 0;
   const staleItems: StalenessReport["stale_items"] = [];
 
   for (const a of anchors) {
-    const res = checkMemoryStaleness(db, a.memory_id);
+    const res = checkMemoryStaleness(db, a.memory_id, opts);
     if (res.status === "fresh") {
       freshCount++;
     } else if (res.status === "stale") {
@@ -349,6 +409,9 @@ export function scanWorkspaceStaleness(db: Database): StalenessReport {
         status: "stale",
         reason: res.reason,
       });
+    } else if (res.status === "untrusted") {
+      untrustedCount++;
+      staleItems.push({ memory_id: a.memory_id, file_path: a.file_path, status: "untrusted", reason: res.reason });
     } else if (res.status === "unlinked") {
       unlinkedCount++;
       staleItems.push({
@@ -365,6 +428,7 @@ export function scanWorkspaceStaleness(db: Database): StalenessReport {
     fresh_count: freshCount,
     stale_count: staleCount,
     unlinked_count: unlinkedCount,
+    untrusted_count: untrustedCount,
     stale_items: staleItems,
   };
 }

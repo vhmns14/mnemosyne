@@ -10,7 +10,7 @@ import { DeriverWorker } from "./engine/deriver.ts";
 import { handlePeerApi } from "./peer/api.ts";
 import { resolveVaultDirForApi } from "./engine/vault.ts";
 import { assertRuleFilePath } from "./engine/rules_exporter.ts";
-import { resolveAnchorForApi, resolveGitDirForApi, resolveWorkspaceDirForApi, PathConfinementError } from "./engine/safe_paths.ts";
+import { resolveAnchorForApi, resolveGitDirForApi, resolveWorkspaceDirForApi, isAllowedApiPath, assertApiGitAllowed, assertApiHooksDirAllowed, PathConfinementError } from "./engine/safe_paths.ts";
 import { detectWorkspace } from "./engine/workspace.ts";
 import { findGitRoot } from "./engine/hook.ts";
 
@@ -679,6 +679,7 @@ try {
       try {
         const body = (await req.json().catch(() => ({}))) as any;
         const cwd = resolveGitDirForApi(body.cwd, gitRootOf, "cwd");
+        assertApiGitAllowed(cwd);
         const result = await engine.captureGit({ cwd, scope: body.scope });
         return Response.json({ success: true, result }, { headers: corsHeaders });
       } catch (err: any) {
@@ -884,7 +885,7 @@ try {
           );
         }
         const safe = resolveAnchorForApi(body.repo_path, body.file_path);
-        const anchor = engine.anchorMemory(body.memory_id, safe.filePath, safe.repoPath, body.symbol_name);
+        const anchor = engine.anchorMemory(body.memory_id, safe.filePath, safe.repoPath, body.symbol_name, { allowGitDir: isAllowedApiPath });
         return Response.json({ success: true, anchor }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: errStatus(err), headers: corsHeaders });
@@ -978,7 +979,7 @@ try {
     if (method === "POST" && url.pathname === "/v1/hooks/install") {
       try {
         const body = (await req.json().catch(() => ({}))) as any;
-        const res = engine.installGitHook(resolveGitDirForApi(body?.target_dir, gitRootOf, "target_dir"));
+        const res = engine.installGitHook(((d) => (assertApiHooksDirAllowed(d), d))(resolveGitDirForApi(body?.target_dir, gitRootOf, "target_dir")));
         return Response.json({ success: res.success, result: res }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: errStatus(err), headers: corsHeaders });
@@ -988,7 +989,7 @@ try {
     if (method === "POST" && url.pathname === "/v1/hooks/uninstall") {
       try {
         const body = (await req.json().catch(() => ({}))) as any;
-        const res = engine.uninstallGitHook(resolveGitDirForApi(body?.target_dir, gitRootOf, "target_dir"));
+        const res = engine.uninstallGitHook(((d) => (assertApiHooksDirAllowed(d), d))(resolveGitDirForApi(body?.target_dir, gitRootOf, "target_dir")));
         return Response.json({ success: res.success, result: res }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: errStatus(err), headers: corsHeaders });

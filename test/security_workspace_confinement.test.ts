@@ -61,8 +61,9 @@ beforeAll(async () => {
   s.stop(true);
   base = `http://127.0.0.1:${port}`;
   proc = Bun.spawn(["bun", "run", SERVER], {
-    cwd: root, // default workspace root = daemon cwd
+    cwd: root,
     env: {
+      MNEMO_WORKSPACE_ROOTS: root, // no implicit cwd default any more
       PATH: process.env.PATH || "",
       HOME: home,
       MNEMO_DB_PATH: join(home, "memory.db"),
@@ -110,7 +111,7 @@ describe("safeGit", () => {
 });
 
 describe("path confinement helpers", () => {
-  test("roots never include '/' and default to cwd", () => {
+  test("roots never include '/'", () => {
     const prev = process.env.MNEMO_WORKSPACE_ROOTS;
     process.env.MNEMO_WORKSPACE_ROOTS = `/:${root}`;
     try {
@@ -177,9 +178,10 @@ describe("REST boundaries", () => {
     expect(existsSync(join(outside, "repo", ".git", "hooks", "pre-commit"))).toBe(false);
     expect((await post("/v1/rules/sync", { targetPath: join(outside, "AGENTS.md") })).status).toBe(403);
     expect(existsSync(join(outside, "AGENTS.md"))).toBe(false);
-    // Inside the root still works.
-    const ok = await post("/v1/memory/capture/git", { cwd: join(root, "repo") });
-    expect(ok.status).toBe(200);
+    // Inside the root it is confined but still needs the explicit git opt-in (MNEMO_ALLOW_GIT=1).
+    const gated = await post("/v1/memory/capture/git", { cwd: join(root, "repo") });
+    expect(gated.status).toBe(403);
+    expect(((await gated.json()) as any).error).toMatch(/MNEMO_ALLOW_GIT/);
     expect(existsSync(marker)).toBe(false);
   });
 });
@@ -188,7 +190,7 @@ describe("MCP boundaries", () => {
   test("anchor_code_memory / capture_git / create_backup refuse outside paths", async () => {
     const p = Bun.spawn(["bun", MCP], {
       cwd: root,
-      env: { PATH: process.env.PATH || "", HOME: home, MNEMO_DB_PATH: join(home, "mcp.db"), MNEMO_DERIVER: "off" },
+      env: { PATH: process.env.PATH || "", HOME: home, MNEMO_DB_PATH: join(home, "mcp.db"), MNEMO_DERIVER: "off", MNEMO_WORKSPACE_ROOTS: root },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",

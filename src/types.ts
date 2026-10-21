@@ -357,7 +357,8 @@ export interface CalibratedToolResult {
 /**
  * Git-Anchored Staleness Detection
  */
-export type StalenessStatus = "fresh" | "stale" | "unlinked";
+/** "untrusted": the stored anchor points outside the current workspace roots; reported, never opened. */
+export type StalenessStatus = "fresh" | "stale" | "unlinked" | "untrusted";
 
 export interface GitAnchorRecord {
   memory_id: string;
@@ -377,6 +378,8 @@ export interface StalenessReport {
   fresh_count: number;
   stale_count: number;
   unlinked_count: number;
+  /** Anchors outside the current workspace roots (not opened or hashed). */
+  untrusted_count?: number;
   stale_items: Array<{
     memory_id: string;
     file_path: string;

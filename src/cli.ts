@@ -1061,7 +1061,7 @@ Preview what writing this would deduplicate, supersede, or keep side by side —
 
       case "staleness": {
         console.log(`\n🔍 Scanning workspace code staleness across anchored memories...`);
-        const report = engine.scanStaleness();
+        const report = engine.scanStaleness({ extraRoots: [process.cwd()] }); // the user at their own shell
         console.log(`  Total Anchored: ${report.total_anchored}`);
         console.log(`  Fresh: \x1b[32m${report.fresh_count}\x1b[0m | Stale: \x1b[33m${report.stale_count}\x1b[0m | Unlinked: \x1b[31m${report.unlinked_count}\x1b[0m\n`);
         if (report.stale_items.length > 0) {

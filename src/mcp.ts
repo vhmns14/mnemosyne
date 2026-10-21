@@ -2,7 +2,7 @@
 import { VERSION } from "./config.ts";
 import { resolveVaultDirForApi } from "./engine/vault.ts";
 import { assertRuleFilePath } from "./engine/rules_exporter.ts";
-import { resolveAnchorForApi, resolveGitDirForApi, resolveWorkspaceDirForApi, realpathLoose, PathConfinementError } from "./engine/safe_paths.ts";
+import { resolveAnchorForApi, resolveGitDirForApi, resolveWorkspaceDirForApi, isAllowedApiPath, assertApiGitAllowed, assertApiHooksDirAllowed, realpathLoose, PathConfinementError } from "./engine/safe_paths.ts";
 import { detectWorkspace } from "./engine/workspace.ts";
 import { findGitRoot } from "./engine/hook.ts";
 import { getDefaultBackupDir } from "./engine/backup.ts";
@@ -936,7 +936,9 @@ async function handleMessage(line: string) {
       }
 
       if (name === "capture_git") {
-        const res = await engine.captureGit({ cwd: resolveGitDirForApi(args.cwd, gitRootOf, "cwd"), scope: args.scope });
+        const cwd = resolveGitDirForApi(args.cwd, gitRootOf, "cwd");
+        assertApiGitAllowed(cwd);
+        const res = await engine.captureGit({ cwd, scope: args.scope });
         sendJson({
           jsonrpc: "2.0",
           id,
@@ -1070,7 +1072,7 @@ async function handleMessage(line: string) {
       }
 
       if (name === "install_git_hook") {
-        const res = engine.installGitHook(resolveGitDirForApi(args.target_dir, gitRootOf, "target_dir"));
+        const res = engine.installGitHook(((d) => (assertApiHooksDirAllowed(d), d))(resolveGitDirForApi(args.target_dir, gitRootOf, "target_dir")));
         sendJson({
           jsonrpc: "2.0",
           id,
@@ -1240,7 +1242,7 @@ async function handleMessage(line: string) {
 
       if (name === "anchor_code_memory") {
         const safe = resolveAnchorForApi(args.repo_path, args.file_path);
-        const res = engine.anchorMemory(args.memory_id, safe.filePath, safe.repoPath, args.symbol_name);
+        const res = engine.anchorMemory(args.memory_id, safe.filePath, safe.repoPath, args.symbol_name, { allowGitDir: isAllowedApiPath });
         sendJson({
           jsonrpc: "2.0",
           id,

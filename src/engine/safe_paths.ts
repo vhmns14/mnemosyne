@@ -1,5 +1,9 @@
 import { existsSync, realpathSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { CONFIG } from "../config.ts";
+import { findWorkTree, repoOwnedByCurrentUser } from "./git_files.ts";
+import { findGitRoot, resolveGitHooksDir } from "./hook.ts";
 
 /** Raised when an API-supplied path falls outside the allow-listed roots (HTTP 403). */
 export class PathConfinementError extends Error {
@@ -9,27 +13,101 @@ export class PathConfinementError extends Error {
 /**
  * Filesystem/process confinement for paths that arrive from a REST body or an MCP
  * tool call. The CLI is the user typing at their own shell and keeps free paths;
- * network/agent callers may only touch workspaces under an allow-listed root.
+ * network/agent callers may only touch workspaces under an allow-listed root, or
+ * the mnemo data directory (the directory holding the DB, e.g. ~/.mnemosyne).
  *
  * Roots: MNEMO_WORKSPACE_ROOTS (or the older name MNEMO_ANCHOR_ROOTS), a
- * path-delimiter-separated list (":" on POSIX). Default: the daemon's own working
- * directory. The filesystem root "/" is never accepted as a root, so a daemon
- * started from "/" confines API callers to nothing until roots are configured.
+ * path-delimiter-separated list (":" on POSIX). There is NO default: when unset,
+ * path-taking API features are refused with 403 (except inside the data dir), so a
+ * daemon started from $HOME never silently exposes every repo under it.
+ * A root is rejected when it is "/", $HOME (or any ancestor of $HOME), or a system
+ * directory (/etc, /usr, /var, /root, /bin, /proc, ... or anything inside the
+ * strictly-system ones).
  */
-export function workspaceRoots(): string[] {
-  const raw = process.env.MNEMO_WORKSPACE_ROOTS || process.env.MNEMO_ANCHOR_ROOTS || "";
-  const list = raw ? raw.split(delimiter).map((s) => s.trim()).filter(Boolean) : [process.cwd()];
-  const out: string[] = [];
-  for (const r of list) {
-    try {
-      const real = realpathSync(resolve(r));
-      if (real === sep || real === dirname(real)) continue; // never "/"
-      if (!out.includes(real)) out.push(real);
-    } catch {
-      // nonexistent root: skip
-    }
+const SYSTEM_EXACT = ["/var", "/opt", "/srv", "/tmp", "/home", "/Users", "/private", "/mnt", "/media", "/run", "/snap", "/Library", "/System", "/Applications", "/Volumes"];
+const SYSTEM_TREE = ["/etc", "/usr", "/root", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/boot", "/dev", "/proc", "/sys", "/private/etc", "/var/log", "/var/lib", "/var/run", "/var/spool", "/var/db"];
+
+function realOrResolved(p: string): string {
+  try { return realpathSync(resolve(p)); } catch { return resolve(p); }
+}
+
+/** Why a candidate root is refused, or null when it is acceptable. */
+export function rootRejection(real: string): string | null {
+  if (real === sep || real === dirname(real)) return "filesystem root";
+  const homes = new Set<string>();
+  for (const h of [homedir(), process.env.HOME]) if (h) homes.add(realOrResolved(h));
+  for (const h of homes) {
+    if (real === h) return "$HOME";
+    if (isInside(h, real)) return "an ancestor of $HOME";
   }
-  return out;
+  for (const d of SYSTEM_EXACT) if (real === d || real === realOrResolved(d)) return "system directory";
+  for (const d of SYSTEM_TREE) {
+    if (isInside(real, d)) return "system directory";
+    const rd = realOrResolved(d);
+    if (rd !== d && isInside(real, rd)) return "system directory";
+  }
+  return null;
+}
+
+/** The data dir is ours (it may live under /root or $HOME), but never "/", $HOME itself or an ancestor. */
+function dataDirRejection(real: string): string | null {
+  const why = rootRejection(real);
+  return why === "system directory" && !SYSTEM_EXACT.includes(real) ? null : why;
+}
+
+export interface RootsReport { roots: string[]; rejected: Array<{ path: string; reason: string }>; configured: boolean }
+
+export function workspaceRootsReport(): RootsReport {
+  const raw = process.env.MNEMO_WORKSPACE_ROOTS || process.env.MNEMO_ANCHOR_ROOTS || "";
+  const list = raw ? raw.split(delimiter).map((s) => s.trim()).filter(Boolean) : [];
+  const out: string[] = [];
+  const rejected: RootsReport["rejected"] = [];
+  for (const r of list) {
+    let real: string;
+    try {
+      real = realpathSync(resolve(r));
+    } catch {
+      rejected.push({ path: r, reason: "does not exist" });
+      continue;
+    }
+    const why = rootRejection(real);
+    if (why) { rejected.push({ path: r, reason: why }); continue; }
+    if (!out.includes(real)) out.push(real);
+  }
+  return { roots: out, rejected, configured: list.length > 0 };
+}
+
+export function workspaceRoots(): string[] {
+  return workspaceRootsReport().roots;
+}
+
+/** The mnemo data directory (holds the DB, backups, default vault). Always allowed. */
+export function mnemoDataDir(): string {
+  return realpathLoose(dirname(resolve(process.env.MNEMO_DB_PATH || CONFIG.DB_PATH)));
+}
+
+/** Every directory an API caller may touch: configured roots plus the data dir. */
+export function allowedApiDirs(): string[] {
+  const dirs = workspaceRoots();
+  const data = mnemoDataDir();
+  if (!dataDirRejection(data) && !dirs.includes(data)) dirs.push(data);
+  return dirs;
+}
+
+/** True when an (already realpath'd) path is inside a root or the data dir. */
+export function isAllowedApiPath(realPath: string): boolean {
+  return allowedApiDirs().some((d) => isInside(realPath, d));
+}
+
+function noRootsMessage(what: string): string {
+  const rep = workspaceRootsReport();
+  if (!rep.configured) {
+    return `${what} is disabled for API/MCP callers: MNEMO_WORKSPACE_ROOTS is not set. ` +
+      `Set it to the project directories this daemon may touch (":"-separated, not $HOME or a system dir); ` +
+      `only paths inside the mnemo data dir are allowed until then.`;
+  }
+  const rej = rep.rejected.map((r) => `${r.path} (${r.reason})`).join(", ");
+  return `${what} must be inside a workspace root (MNEMO_WORKSPACE_ROOTS)` + (rej ? `; rejected roots: ${rej}` : "");
 }
 
 function isInside(child: string, parent: string): boolean {
@@ -60,14 +138,15 @@ function assertString(v: unknown, what: string): string {
  */
 export function resolveWorkspaceDirForApi(requested: unknown, what = "directory"): string {
   const roots = workspaceRoots();
-  if (roots.length === 0) {
-    throw new PathConfinementError(`No workspace root configured (set MNEMO_WORKSPACE_ROOTS); refusing ${what}`);
+  if (requested === undefined || requested === null || requested === "") {
+    if (roots.length === 0) throw new PathConfinementError(noRootsMessage(what));
+    return roots[0];
   }
-  if (requested === undefined || requested === null || requested === "") return roots[0];
   const s = assertString(requested, what);
+  if (!isAbsolute(s) && roots.length === 0) throw new PathConfinementError(noRootsMessage(what));
   const target = realpathLoose(isAbsolute(s) ? s : join(roots[0], s));
-  for (const r of roots) if (isInside(target, r)) return target;
-  throw new PathConfinementError(`${what} must be inside a workspace root (MNEMO_WORKSPACE_ROOTS)`);
+  if (isAllowedApiPath(target)) return target;
+  throw new PathConfinementError(noRootsMessage(what));
 }
 
 /**
@@ -150,4 +229,36 @@ export function resolveGitDirForApi(requested: unknown, findRoot: (dir: string) 
   const root = findRoot(dir);
   if (root) resolveWorkspaceDirForApi(root, `git repository for ${what}`);
   return dir;
+}
+
+/**
+ * Gate for the one API feature that still runs git (capture/git needs the commit
+ * message, which lives in a possibly packed object). REST/MCP callers get it only
+ * when the operator opted in with MNEMO_ALLOW_GIT=1 AND the repository (work tree,
+ * .git and its config) is owned by the uid running mnemo. safeGit's hardening still
+ * applies on top. The CLI does not go through this gate.
+ */
+export function assertApiGitAllowed(dir: string, what = "capture/git"): string {
+  if (process.env.MNEMO_ALLOW_GIT !== "1") {
+    throw new PathConfinementError(`${what} runs git and is disabled for API/MCP callers; set MNEMO_ALLOW_GIT=1 to opt in (use the CLI \`mnemo capture\` otherwise)`);
+  }
+  const tree = findWorkTree(dir);
+  if (!tree) throw new PathConfinementError(`${what}: not inside a git repository`);
+  if (!isAllowedApiPath(realpathLoose(tree))) throw new PathConfinementError(noRootsMessage(`git repository for ${what}`));
+  if (!repoOwnedByCurrentUser(tree)) {
+    throw new PathConfinementError(`${what}: repository is not owned by the current user; refusing to run git in it`);
+  }
+  return tree;
+}
+
+/**
+ * hooks install/uninstall write an executable into the repo's hooks dir. A `.git`
+ * *file* (`gitdir: ...`) can point that dir anywhere, so the resolved hooks dir must
+ * itself be inside an allowed directory.
+ */
+export function assertApiHooksDirAllowed(dir: string): void {
+  const repo = findGitRoot(dir);
+  if (!repo) return; // the engine reports "not a git repository" itself
+  const hooks = realpathLoose(resolveGitHooksDir(repo));
+  if (!isAllowedApiPath(hooks)) throw new PathConfinementError(noRootsMessage("git hooks directory"));
 }
