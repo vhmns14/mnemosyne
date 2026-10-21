@@ -133,3 +133,19 @@ describe("migration", () => {
     expect(claimBatch(old, 10)!.messages.length).toBe(2);
   });
 });
+
+describe("checkpoint after a session switch (real Hermes run)", () => {
+  test("turns already ingested under the previous session id are not queued again", async () => {
+    const { checkpointTranscript } = await import("../src/engine/messages.ts");
+    const turns = [
+      { role: "user", content: "gue backend engineer di Jakarta" },
+      { role: "assistant", content: "Siap, dicatat." },
+    ];
+    ingestMessages(db, turns.map((t, i) => ({ peer: "raka", session: "s1", role: t.role, content: t.content, ts: i + 1 })));
+    const res = checkpointTranscript(db, "raka", "s2", [...turns, { role: "user", content: "gue lagi belajar Rust" }]);
+    expect(res.queued).toBe(1);
+    expect((db.query("SELECT COUNT(*) c FROM messages").get() as any).c).toBe(3);
+    // Another peer saying the same words is still its own evidence.
+    expect(checkpointTranscript(db, "sinta", "s2", turns).queued).toBe(2);
+  });
+});

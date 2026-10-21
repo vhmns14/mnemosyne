@@ -409,7 +409,8 @@ export interface TieredItem {
   trust: number;
   text: string;
   score?: number;
-  provenance?: MessageRow[];
+  /** Source messages, trimmed to what an agent needs (no queue internals: digests, claim state, errors). */
+  provenance?: Array<Pick<MessageRow, "id" | "session" | "role" | "content" | "ts">>;
 }
 
 /**
@@ -433,7 +434,7 @@ export function renderTier(db: Database, facts: Array<FactRow & { score?: number
       trust: Number(f.trust.toFixed(2)),
       text,
       score: f.score,
-      provenance: tier === "L2" ? getMessagesByIds(db, f.source_message_ids) : undefined,
+      provenance: tier === "L2" ? getMessagesByIds(db, f.source_message_ids).map((m) => ({ id: m.id, session: m.session, role: m.role, content: m.content, ts: m.ts })) : undefined,
     });
   }
   let text: string;

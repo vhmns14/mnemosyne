@@ -323,6 +323,8 @@ describe("Trust, card, tiers, context, reflect, embeddings", () => {
     expect(l1.items[0].text).toBe(long.trim());
     const l2 = renderTier(db, facts, "L2");
     expect(l2.items[0].provenance![0].content).toContain("thesis");
+    // Agent-facing provenance carries no queue internals (real Hermes run returned digests/claim state).
+    expect(Object.keys(l2.items[0].provenance![0]).sort()).toEqual(["content", "id", "role", "session", "ts"]);
     expect(f.action).toBe("added");
   });
 

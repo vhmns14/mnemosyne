@@ -125,7 +125,7 @@ export interface IngestMessagesResult {
  * same (peer, session, role, content, ts) is a no-op, so clients can retry
  * at-least-once without duplicating evidence.
  */
-export function ingestMessages(db: Database, inputs: MessageInput[], opts: { skipIfSeenContent?: boolean } = {}): IngestMessagesResult {
+export function ingestMessages(db: Database, inputs: MessageInput[], opts: { skipIfSeenContent?: boolean; skipIfSeenAnySession?: boolean } = {}): IngestMessagesResult {
   const now = Date.now();
   const result: IngestMessagesResult = { ingested: 0, duplicates: 0, skipped: 0, ids: [] };
   const insert = db.prepare(`
@@ -133,6 +133,7 @@ export function ingestMessages(db: Database, inputs: MessageInput[], opts: { ski
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const seen = db.prepare(`SELECT 1 FROM messages WHERE content_digest = ? LIMIT 1`);
+  const seenAnySession = db.prepare(`SELECT 1 FROM messages WHERE peer = ? AND role = ? AND content = ? LIMIT 1`);
   const nonce = getFenceNonce(db);
 
   const tx = db.transaction(() => {
@@ -149,7 +150,7 @@ export function ingestMessages(db: Database, inputs: MessageInput[], opts: { ski
         continue;
       }
       const contentDigest = sha([peer, session, role, content]);
-      if (opts.skipIfSeenContent && seen.get(contentDigest)) {
+      if ((opts.skipIfSeenContent && seen.get(contentDigest)) || (opts.skipIfSeenAnySession && seenAnySession.get(peer, role, content))) {
         result.duplicates++;
         continue;
       }
@@ -173,7 +174,10 @@ export function ingestMessages(db: Database, inputs: MessageInput[], opts: { ski
 /**
  * Pre-compression checkpoint (ByteRover-style): archives the transcript that is
  * about to be compressed away. Idempotent by transcript digest; messages already
- * archived (same peer/session/role/content) are not queued twice.
+ * archived for this peer (same role/content, in ANY session) are not queued twice:
+ * Hermes continues a compressed or switched conversation under a new session id
+ * whose transcript still carries the earlier turns, and re-queuing them made the
+ * deriver re-learn the same statements and inflate trust (seen with real Hermes).
  */
 export function checkpointTranscript(
   db: Database,
@@ -197,7 +201,7 @@ export function checkpointTranscript(
   const res = ingestMessages(
     db,
     rows.map((r, i) => ({ peer, session, role: r.role, content: r.content, ts: base + i, source: "checkpoint" })),
-    { skipIfSeenContent: true }
+    { skipIfSeenContent: true, skipIfSeenAnySession: true }
   );
   db.prepare(
     `INSERT OR IGNORE INTO peer_checkpoints (digest, peer, session, message_count, queued, created_at) VALUES (?, ?, ?, ?, ?, ?)`
