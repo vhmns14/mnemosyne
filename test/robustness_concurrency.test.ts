@@ -114,3 +114,22 @@ describe("idempotent re-observation", () => {
     }
   });
 });
+
+describe("migration", () => {
+  test("a queue created before claim ownership (no claimed_by) upgrades in place and keeps its rows claimable", () => {
+    const old = new Database(":memory:");
+    old.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL, session TEXT NOT NULL DEFAULT 'default',
+      role TEXT NOT NULL DEFAULT 'user', content TEXT NOT NULL, ts INTEGER NOT NULL, created_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'done', 'skipped')),
+      attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL DEFAULT 0, claimed_at INTEGER, last_error TEXT,
+      digest TEXT NOT NULL, content_digest TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'api');
+      INSERT INTO messages (peer, content, ts, created_at, status, digest, content_digest) VALUES ('raka', 'gue tinggal di Bandung', 1, 1, 'pending', 'd1', 'c1');
+      INSERT INTO messages (peer, content, ts, created_at, status, claimed_at, digest, content_digest) VALUES ('raka', 'gue suka kopi', 2, 2, 'processing', 1, 'd2', 'c2');`);
+    initSchema(old);
+    initSchema(old); // idempotent
+    expect((old.query("SELECT COUNT(*) c FROM messages").get() as any).c).toBe(2);
+    // The legacy 'processing' row (no owner, ancient claimed_at) is released by the lease and both are claimable.
+    expect(claimBatch(old, 10)!.messages.length).toBe(2);
+  });
+});
