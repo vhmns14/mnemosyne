@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { searchHybrid } from "./hybrid.ts";
+import { LlmClient } from "./llm.ts";
+import { expandQuery, expansionStrings } from "./query_expansion.ts";
 import { applyAssociativeResonance, recordCoOccurrence } from "./holographic.ts";
 import { computeHippoPageRank } from "./hipporag.ts";
 import { rememberMemory, getOrCreatePersona, addEntityAlias, getEntityAliases, consolidateMemories, upsertFact, extractAndUpsert, deleteBySource, deleteFactById, ingestMessageOrFact, getHermesStats, sweepExpiredFacts, evictLowScoreFacts } from "./dialectic.ts";
@@ -139,6 +141,11 @@ export class MnemosyneEngine {
     token_budget?: TokenBudget;
   }> {
     // 1. Primary Hybrid Search (Vector + BM25 + Recency + Bi-temporal + Guardrails + Structure Filter)
+    // Query expansion with the configured LLM (bounded, cached, fail-open to the plain query).
+    if (!options.expansions && options.query?.trim()) {
+      const llm = LlmClient.fromEnv();
+      if (llm) options = { ...options, expansions: expansionStrings(await expandQuery(options.query, llm)) };
+    }
     const initial = await searchHybrid(this.db, options);
 
     // 2. Holographic Associative Spreading Activation (2-hop bidirectional)

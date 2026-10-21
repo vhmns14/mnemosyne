@@ -4,6 +4,21 @@ import { cosineSimilarity, decodeVectorFor, embeddingModelOf, getEmbedding, LOCA
 import { sweepExpiredFacts } from "./dialectic.ts";
 import { getUsageMap, usageMultiplier } from "./feedback.ts";
 import type { MemoryRecord, RecallOptions, ScoredMemory } from "../types.ts";
+import { lexicalCoverage, lexicalKeySet, lexicalTokens, lexiconEnabled, type TokenKeys } from "./lexicon.ts";
+
+/** Per-memory lexical key sets, reused across queries until the row changes. */
+const keyCache = new Map<string, { u: number; keys: Set<string> }>();
+function docKeys(id: string, updatedAt: number, content: string): Set<string> {
+  const hit = keyCache.get(id);
+  if (hit && hit.u === updatedAt) return hit.keys;
+  const keys = lexicalKeySet(content);
+  keyCache.set(id, { u: updatedAt, keys });
+  if (keyCache.size > 50000) keyCache.delete(keyCache.keys().next().value as string);
+  return keys;
+}
+
+/** Weight of an expansion match relative to a match on the user's own words. */
+const EXPANSION_WEIGHT = 0.85;
 
 import * as os from "node:os";
 
@@ -155,6 +170,45 @@ export async function searchHybrid(
   const candidateRows = db.query(sql).all(...params) as any[];
   if (candidateRows.length === 0) return [];
 
+  // 4b. Bilingual stem/synonym lexical leg (lexicon.ts) over the query and any LLM
+  // expansions: catches "berwisata"~"wisata", "jogging"~"jog", "trip"~"travel" that
+  // FTS5 unicode61 tokens (exact word / prefix only) miss. IDF-weighted coverage.
+  const expansions = (options.expansions || []).filter((e) => typeof e === "string" && e.trim()).slice(0, 4);
+  const lexScores = new Map<string, number>();
+  if (lexiconEnabled()) {
+    const qTok = lexicalTokens(resolvedQuery);
+    const eTok = expansions.map((e) => lexicalTokens(e));
+    if (qTok.length || eTok.some((t) => t.length)) {
+      const docs = candidateRows.map((r) => docKeys(r.id, r.updated_at ?? 0, String(r.content ?? "")));
+      const df = new Map<string, number>();
+      for (const d of docs) for (const k of d) df.set(k, (df.get(k) || 0) + 1);
+      const N = docs.length;
+      const idf = (t: TokenKeys) => {
+        let best = Infinity;
+        for (const k of t.keys) { const c = df.get(k); if (c && c < best) best = c; }
+        if (best === Infinity && t.group) best = df.get(t.group) || 0;
+        if (best === Infinity) best = 0;
+        return Math.log(1 + N / (1 + best));
+      };
+      candidateRows.forEach((r, i) => {
+        let sc = lexicalCoverage(qTok, docs[i], idf);
+        for (const t of eTok) sc = Math.max(sc, EXPANSION_WEIGHT * lexicalCoverage(t, docs[i], idf));
+        if (sc > 0) lexScores.set(r.id, sc);
+      });
+    }
+  }
+
+  // 4c. Expansion vectors (same model as the query vector only).
+  const expansionVecs: Float32Array[] = [];
+  if (queryVec && expansions.length) {
+    for (const e of expansions) {
+      try {
+        const v = await getEmbedding(e);
+        if (embeddingModelOf(v) === embeddingModelOf(queryVec)) expansionVecs.push(v);
+      } catch {}
+    }
+  }
+
   // 5. Calculate Scored Memories with Relevance Gating
   const scoredMemories: ScoredMemory[] = [];
   // Weight by the model that actually produced the query vector: a remote provider
@@ -178,11 +232,12 @@ export async function searchHybrid(
       const memVec = decodeVectorFor(row.vector_blob, row.vector_model, queryModel!);
       if (memVec) {
         vectorScore = Math.max(0, cosineSimilarity(queryVec, memVec));
+        for (const ev of expansionVecs) vectorScore = Math.max(vectorScore, EXPANSION_WEIGHT * cosineSimilarity(ev, memVec));
       }
     }
 
-    // B. BM25 Score
-    const bm25Score = ftsScores.get(row.id) || 0;
+    // B. Lexical score: FTS5 BM25 (exact/prefix) or the stem/synonym leg, whichever is stronger
+    const bm25Score = Math.max(ftsScores.get(row.id) || 0, 0.9 * (lexScores.get(row.id) || 0));
 
     // C. Semantic / Lexical Relevance Gating:
     const signal = vectorScore * vectorWeight + bm25Score * bm25Weight;

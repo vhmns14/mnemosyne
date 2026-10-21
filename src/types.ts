@@ -107,6 +107,8 @@ export interface RecallOptions {
   at_timestamp?: number; // Bi-temporal time travel query
   include_expired?: boolean;
   max_tokens?: number; // Knapsack Context Compactor budget limit
+  /** Extra query strings (LLM paraphrases/keywords) scored alongside the query; see query_expansion.ts. */
+  expansions?: string[];
   prefer_bm25?: boolean; // Fast path: BM25/FTS5 first, skip dense vector computation
 }
 

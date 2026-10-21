@@ -3,7 +3,7 @@
  * Routes /v1/chat/completions by the system prompt's intent to a scripted handler,
  * and serves /v1/embeddings with a tiny deterministic vector.
  */
-export type Intent = "extract" | "decide" | "summary" | "ask" | "audit" | "reconcile" | "reflect" | "unknown";
+export type Intent = "extract" | "decide" | "summary" | "ask" | "audit" | "reconcile" | "reflect" | "expand" | "unknown";
 
 export interface MockCall {
   intent: Intent;
@@ -23,6 +23,7 @@ export function intentOf(system: string): Intent {
   if (system.includes("You reconcile")) return "reconcile";
   if (system.includes("You answer questions")) return "ask";
   if (system.includes("You reflect over facts")) return "reflect";
+  if (system.includes("You expand search queries")) return "expand";
   return "unknown";
 }
 
@@ -120,6 +121,8 @@ function defaultReply(call: MockCall): any {
       return { summary: "Mock summary." };
     case "reflect":
       return { insights: [] };
+    case "expand":
+      return { paraphrases: [], keywords: [] };
     default:
       return { answer: "", citations: [], abstain: true };
   }

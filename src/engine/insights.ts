@@ -1,3 +1,4 @@
+import { expandQuery, expansionStrings } from "./query_expansion.ts";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { addDerivedFact, cardFacts, getFactRow, listFacts, type FactRow } from "./facts.ts";
@@ -126,7 +127,11 @@ function draftOf(state: { answer: string; citations: string[] }, labels: string[
 export async function askPeer(db: Database, llm: LlmClient | null, peer: string, question: string, opts: { depth?: number; limit?: number } = {}): Promise<AskResult> {
   const depth = Math.min(3, Math.max(1, Math.trunc(opts.depth ?? 1)));
   const q = question.trim().slice(0, 2000);
-  const recalled = await peerRecall(db, peer, q, opts.limit ?? 12);
+  // Query expansion (bounded, cached, fail-open): paraphrases/keywords from the same LLM.
+  // Skipped when the peer has no facts: nothing to recall, so no LLM call at all.
+  const hasFacts = db.query(`SELECT 1 FROM derived_facts d JOIN memories m ON m.id = d.memory_id WHERE d.peer = ? AND m.is_active = 1 LIMIT 1`).get(peer);
+  const expansions = hasFacts ? expansionStrings(await expandQuery(q, llm)) : [];
+  const recalled = await peerRecall(db, peer, q, opts.limit ?? 12, { expansions });
   // The peer card (stable, trusted facts) is always in view: recall alone can miss
   // a paraphrased question about a core fact, and the model then answers from the
   // summary without anything citable and abstains.

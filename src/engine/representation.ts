@@ -5,6 +5,7 @@ import { cardFacts, getFactRow, listFacts, renderTier, truncateTokens, estimateT
 import { fenceContext, getFenceNonce, PEER_RE } from "./messages.ts";
 import { redactSecrets } from "./redact.ts";
 import type { LlmClient } from "./llm.ts";
+import { lexicalCoverage, lexicalKeySet, lexicalTokens, lexiconEnabled } from "./lexicon.ts";
 
 /**
  * Peer representation (Honcho-style): a short living summary + a peer card of
@@ -31,12 +32,13 @@ export interface Representation {
  * "moved to Jakarta"), also scores this peer's own facts directly (embedding +
  * content-word overlap) and keeps the best of both.
  */
-export async function peerRecall(db: Database, peer: string, query: string, limit = 8): Promise<Array<FactRow & { score: number }>> {
+export async function peerRecall(db: Database, peer: string, query: string, limit = 8, opts: { expansions?: string[] } = {}): Promise<Array<FactRow & { score: number }>> {
   if (!query.trim()) return [];
   const best = new Map<string, number>();
-  const hits = await searchHybrid(db, { query, limit: Math.max(40, limit * 5), min_relevance: 0.05, scope: "all" });
+  const expansions = opts.expansions ?? [];
+  const hits = await searchHybrid(db, { query, limit: Math.max(40, limit * 5), min_relevance: 0.05, scope: "all", expansions });
   for (const h of hits) if (h.peer === peer) best.set(h.id, Math.max(best.get(h.id) ?? 0, h.score));
-  for (const d of await directPeerScores(db, peer, query)) best.set(d.id, Math.max(best.get(d.id) ?? 0, d.score));
+  for (const d of await directPeerScores(db, peer, query, expansions)) best.set(d.id, Math.max(best.get(d.id) ?? 0, d.score));
   const out: Array<FactRow & { score: number }> = [];
   for (const [id, score] of best) {
     const fact = getFactRow(db, id);
@@ -52,7 +54,7 @@ const RECALL_STOP = new Set(
   "a an the and or of to in on at for with from by is are was were be does do did what where when which who how why now still these days usually raka's yang dan di ke dari apa siapa mana kapan gimana sekarang lagi sih".split(" ")
 );
 
-async function directPeerScores(db: Database, peer: string, query: string): Promise<Array<{ id: string; score: number }>> {
+async function directPeerScores(db: Database, peer: string, query: string, expansions: string[] = []): Promise<Array<{ id: string; score: number }>> {
   const rows = db
     .query(
       `SELECT m.id, m.content, v.vector, v.model AS vmodel FROM derived_facts d JOIN memories m ON m.id = d.memory_id
@@ -73,14 +75,32 @@ async function directPeerScores(db: Database, peer: string, query: string): Prom
     );
   const qt = toks(query);
   const qv = await getEmbedding(query);
+  const useLexicon = lexiconEnabled();
+  const peerLc = peer.toLowerCase();
+  const tokOf = (t: string) => lexicalTokens(t).filter((x) => x.token !== peerLc);
+  const qTok = useLexicon ? tokOf(query) : [];
+  const eTok = useLexicon ? expansions.slice(0, 4).map(tokOf) : [];
+  const evs: Float32Array[] = [];
+  for (const e of expansions.slice(0, 4)) {
+    const v = await getEmbedding(e);
+    if (embeddingModelOf(v) === embeddingModelOf(qv)) evs.push(v);
+  }
   const out: Array<{ id: string; score: number }> = [];
   for (const r of rows) {
     const v = decodeVectorFor(r.vector, r.vmodel, embeddingModelOf(qv));
-    const cos = v ? Math.max(0, cosineSimilarity(qv, v)) : 0;
-    const ft = toks(r.content);
-    let inter = 0;
-    for (const t of qt) if (ft.has(t)) inter++;
-    const lex = qt.size ? inter / qt.size : 0;
+    let cos = v ? Math.max(0, cosineSimilarity(qv, v)) : 0;
+    if (v) for (const ev of evs) cos = Math.max(cos, 0.85 * cosineSimilarity(ev, v));
+    let lex: number;
+    if (useLexicon) {
+      const dk = lexicalKeySet(r.content);
+      lex = lexicalCoverage(qTok, dk);
+      for (const t of eTok) lex = Math.max(lex, 0.85 * lexicalCoverage(t, dk));
+    } else {
+      const ft = toks(r.content);
+      let inter = 0;
+      for (const t of qt) if (ft.has(t)) inter++;
+      lex = qt.size ? inter / qt.size : 0;
+    }
     const score = 0.5 * cos + 0.5 * lex;
     if (score >= 0.08) out.push({ id: r.id, score });
   }
