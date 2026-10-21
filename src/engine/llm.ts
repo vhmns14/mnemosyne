@@ -40,6 +40,18 @@ export class LlmError extends Error {
   }
 }
 
+/**
+ * The model stopped at max_tokens and the JSON it produced is incomplete. Retrying the
+ * same request reproduces it, so callers must shrink the input (the deriver halves the
+ * batch) instead of retrying or poisoning the queue.
+ */
+export class LlmTruncatedError extends LlmError {
+  constructor(message: string) {
+    super(message, false);
+    this.name = "LlmTruncatedError";
+  }
+}
+
 /** Only http(s) endpoints: Bun's fetch also speaks file:// and data:, which must never be an "LLM". */
 export function assertHttpUrl(raw: string): void {
   let u: URL;
@@ -154,6 +166,10 @@ export class LlmClient {
   }
 
   async chat(messages: ChatMessage[], opts: { json?: boolean; temperature?: number; maxTokens?: number } = {}): Promise<string> {
+    return (await this.chatRaw(messages, opts)).content;
+  }
+
+  private async chatRaw(messages: ChatMessage[], opts: { json?: boolean; temperature?: number; maxTokens?: number }): Promise<{ content: string; finish: string | null }> {
     let lastErr: LlmError | null = null;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       if (attempt > 0) {
@@ -171,7 +187,7 @@ export class LlmClient {
     throw lastErr ?? new LlmError("unknown llm failure", true);
   }
 
-  private async once(messages: ChatMessage[], opts: { json?: boolean; temperature?: number; maxTokens?: number }): Promise<string> {
+  private async once(messages: ChatMessage[], opts: { json?: boolean; temperature?: number; maxTokens?: number }): Promise<{ content: string; finish: string | null }> {
     const useJson = Boolean(opts.json) && this.jsonModeSupported;
     const body: Record<string, unknown> = {
       model: this.model,
@@ -213,14 +229,22 @@ export class LlmClient {
       throw new LlmError(`llm http ${res.status}: ${text}`, retryable, res.status);
     }
 
-    const data = (await res.json().catch(() => null)) as { choices?: Array<{ message?: { content?: string } }> } | null;
+    const data = (await res.json().catch(() => null)) as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }> } | null;
     const content = data?.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new LlmError("llm reply had no choices[0].message.content", true);
-    return content;
+    const finish = data?.choices?.[0]?.finish_reason;
+    return { content, finish: typeof finish === "string" ? finish : null };
   }
 
   async chatJSON<T = any>(messages: ChatMessage[], opts: { temperature?: number; maxTokens?: number } = {}): Promise<T> {
-    const text = await this.chat(messages, { ...opts, json: true });
-    return parseJsonReply(text) as T;
+    const { content, finish } = await this.chatRaw(messages, { ...opts, json: true });
+    try {
+      return parseJsonReply(content) as T;
+    } catch (err) {
+      if (finish && /^(length|max_tokens)$/i.test(finish)) {
+        throw new LlmTruncatedError(`model reply truncated at max_tokens (${finish}); JSON incomplete`);
+      }
+      throw err;
+    }
   }
 }

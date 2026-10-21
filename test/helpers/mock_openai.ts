@@ -81,7 +81,11 @@ export class MockOpenAI {
         this.calls.push(call);
         const handler = this.handlers[call.intent];
         const reply = handler ? handler(call) : defaultReply(call);
-        return Response.json({ choices: [{ message: { role: "assistant", content: typeof reply === "string" ? reply : JSON.stringify(reply) } }] });
+        // A handler may return { __raw, __finish } to script a raw (e.g. truncated) reply.
+        if (reply && typeof reply === "object" && "__raw" in reply) {
+          return Response.json({ choices: [{ message: { role: "assistant", content: String(reply.__raw) }, finish_reason: reply.__finish ?? "stop" }] });
+        }
+        return Response.json({ choices: [{ message: { role: "assistant", content: typeof reply === "string" ? reply : JSON.stringify(reply) }, finish_reason: "stop" }] });
       },
     });
   }

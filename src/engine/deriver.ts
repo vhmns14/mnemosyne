@@ -18,7 +18,7 @@ import {
   type DerivedCategory,
   type FactKind,
 } from "./facts.ts";
-import { LlmClient, LlmError, type ChatMessage } from "./llm.ts";
+import { LlmClient, LlmError, LlmTruncatedError, type ChatMessage } from "./llm.ts";
 import { claimBatch, completeBatch, failBatch, queueStats, type MessageRow } from "./messages.ts";
 import { redactSecrets } from "./redact.ts";
 import { refreshRepresentation, upsertSessionSummary, getSessionSummary } from "./representation.ts";
@@ -119,7 +119,7 @@ function extractionPrompt(peer: string, messages: MessageRow[], known: string[],
         `- Temporary facts (a trip, an event, a short-lived state) get "valid_until": the ISO date (YYYY-MM-DD) after which they stop being true. Today is ${today}. Omit it for lasting facts.`,
         `- Never include secrets, passwords, PINs, keys, card numbers or text marked [REDACTED].`,
         `Also update a 1-3 sentence running summary for each session that appears.`,
-        `Reply as JSON: {"facts":[{"content":"","kind":"explicit","category":"profile","confidence":0.9,"source_message_ids":[1],"subject":"","predicate":"","object":"","valid_until":""}],"session_summaries":{"<session>":"..."}}`,
+        `Reply with compact single-line JSON (no indentation): {"facts":[{"content":"","kind":"explicit","category":"profile","confidence":0.9,"source_message_ids":[1],"subject":"","predicate":"","object":"","valid_until":""}],"session_summaries":{"<session>":"..."}}`,
         `Return {"facts":[],"session_summaries":{...}} when nothing durable was said.`,
       ].join("\n"),
     },
@@ -433,6 +433,33 @@ export interface DeriveRunResult {
 }
 
 /** Processes due batches until the queue is drained, an error occurs, or maxBatches is hit. */
+/**
+ * deriveBatch, but a reply cut off at max_tokens (deterministic for that input) halves
+ * the batch and derives each half, down to single messages, instead of failing the
+ * whole batch forever. Reports of the halves are merged.
+ */
+export async function deriveSplitting(db: Database, llm: LlmClient, peer: string, messages: MessageRow[]): Promise<BatchReport> {
+  try {
+    return await deriveBatch(db, llm, peer, messages);
+  } catch (err) {
+    if (!(err instanceof LlmTruncatedError) || messages.length <= 1) throw err;
+    const mid = Math.ceil(messages.length / 2);
+    const a = await deriveSplitting(db, llm, peer, messages.slice(0, mid));
+    const b = await deriveSplitting(db, llm, peer, messages.slice(mid));
+    return {
+      peer,
+      messages: a.messages + b.messages,
+      candidates: a.candidates + b.candidates,
+      added: a.added + b.added,
+      updated: a.updated + b.updated,
+      deleted: a.deleted + b.deleted,
+      noop: a.noop + b.noop,
+      fact_ids: [...a.fact_ids, ...b.fact_ids],
+      sessions: Array.from(new Set([...a.sessions, ...b.sessions])),
+    };
+  }
+}
+
 export async function runDeriverOnce(db: Database, llm: LlmClient | null, opts: { maxBatches?: number; batchSize?: number } = {}): Promise<DeriveRunResult> {
   const result: DeriveRunResult = { batches: [], failed: 0, error: null };
   setMeta(db, "deriver.last_run_at", String(Date.now()));
@@ -459,7 +486,7 @@ export async function runDeriverOnce(db: Database, llm: LlmClient | null, opts: 
     const batch = claimBatch(db, opts.batchSize ?? CONFIG.DERIVER_BATCH);
     if (!batch) break;
     try {
-      const report = await deriveBatch(db, llm, batch.peer, batch.messages);
+      const report = await deriveSplitting(db, llm, batch.peer, batch.messages);
       completeBatch(db, batch.messages.map((m) => m.id));
       result.batches.push(report);
       if (report.added + report.updated + report.deleted > 0) touchedPeers.add(batch.peer);
