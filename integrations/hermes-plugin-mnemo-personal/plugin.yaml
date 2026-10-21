@@ -1,0 +1,10 @@
+name: mnemo-personal
+version: 0.1.0
+description: "Personal memory from a local Mnemosyne daemon: learns facts from conversations, peer card + living summary, cited dialectic answers, pre-compress checkpoints."
+hooks:
+  - sync_turn
+  - prefetch
+  - queue_prefetch
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write

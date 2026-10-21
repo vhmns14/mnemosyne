@@ -1,0 +1,8 @@
+[project]
+name = "hermes-plugin-mnemo-personal"
+version = "0.1.0"
+description = "Hermes Agent memory provider plugin: mnemo-personal (local Mnemosyne daemon)"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# Standard library only: talks to the local daemon over HTTP with urllib.
+dependencies = []

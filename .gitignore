@@ -42,3 +42,7 @@ Thumbs.db
 
 # Agent harness session state
 .pi-glla/
+
+# Python
+__pycache__/
+*.pyc

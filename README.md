@@ -3,7 +3,7 @@
 > *Cross-Platform: Universal MCP Server · Standalone CLI (`mnemo`) · Local REST Daemon · Hermes Agent Pipe*  
 > *Synthesizing the state-of-the-art: **Honcho** (Theory of Mind), **Holographic Memory** (Associative Resonance), **Mem0** (Graph Triples), **Zep/Graphiti** (Bi-Temporal Validity), **Supermemory** (Negative Constraints), **LangMem** (Failure Retrospectives), and **Cognee** (Entity Canonicalization).*
 
-[![Test Suite](https://img.shields.io/badge/Tests-142%20Passed-emerald.svg)](test/)
+[![Test Suite](https://img.shields.io/badge/Tests-183%20Passed-emerald.svg)](test/)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun%201.3-fbf0df?logo=bun)](https://bun.sh)
 [![Storage: SQLite WAL](https://img.shields.io/badge/Storage-SQLite%20WAL-003B57?logo=sqlite)](https://sqlite.org)
 [![Protocol: MCP](https://img.shields.io/badge/Protocol-Model%20Context%20Protocol-7c3aed)](https://modelcontextprotocol.io)
@@ -64,6 +64,80 @@ SOTA memory architectures offer profound concepts, but their implementations are
 | **Zero-LLM Intent Router** | Fast Deterministic Dispatch | `mnemo route` maps prompts to memory commands in <0.02ms with zero LLM token cost. |
 | **Native SSE Stream** | Swarm Event Push Protocol | `GET /v1/events` broadcasts mutation events (`MEMORY_CREATED`, `GUARDRAIL_TRIGGERED`, etc.) without polling. |
 | **Dialectic & Lexical Hardening** | Word-Order Fingerprint & FTS5 Triggers | Preserves token order and polarity distinction during fast-path dedup; native SQLite triggers synchronize full-text search across all writes. |
+
+---
+
+## 🧠 Personal Memory: How It Learns
+
+Mnemosyne can learn about you from ordinary conversations, Honcho-style, using **any OpenAI-compatible Chat Completions endpoint** (OpenRouter, Ollama `/v1`, LM Studio, vLLM, LiteLLM, OpenAI).
+
+**The loop, honestly described:**
+
+1. **Ingest** (`POST /v1/messages`, MCP `ingest_messages`, `mnemo ingest`). Raw messages `{peer, session, role, content, ts}` go into a SQLite `messages` table and a queue. No LLM call here. Secrets are redacted (`redact.ts`), injected `<mnemo-memory>` blocks are stripped so recalled memory is never re-learned, and trivial turns ("ok", "thanks") are kept but never sent to the model. Retries are idempotent: the same `(peer, session, role, content, ts)` is stored once.
+2. **Derive** (a background worker in the daemon, or `mnemo derive --once`). It batches pending messages per peer and makes one JSON-mode call that extracts **explicit facts** and **deductive conclusions** (preferences, goals, habits, constraints, projects…). Each one has a confidence, a category (`profile`, `preferences`, `entities`, `events`, `cases`, `patterns`) and the source message ids. The same call also updates a running summary for each session.
+3. **Decide** (Mem0-style). Each candidate is compared with the top-k most similar existing facts (fingerprint first, then embedding cosine). If nothing is similar, it is added with no LLM call. Otherwise one more call picks `ADD`, `UPDATE <id>`, `DELETE <id>` (contradiction → old fact superseded, history kept) or `NOOP <id>` (already known → trust +0.03). Writes go through the existing `rememberMemory` pipeline, so fingerprint/semantic dedupe and triple-level conflict resolution (`LIKES` vs `DISLIKES`, single-valued predicates) still apply.
+4. **Represent**. After new facts arrive, the peer's **living summary** is regenerated and a **peer card** is assembled from stable facts (trust ≥ 0.45, confidence ≥ 0.5). Every 20 new facts (`MNEMO_REFLECT_EVERY`), a **reflect** pass writes cross-memory `insight` facts that cite the facts they came from.
+5. **Use**. `POST /v1/peers/:peer/ask` (dialectic) answers only from memory and cites memory ids. It abstains when nothing relevant is stored or the model cannot cite anything. `depth` 2 adds a self-audit and 3 adds reconciliation of conflicting memories. `POST /v1/peers/:peer/context` returns the fenced two-layer block for prompt injection. Recall tiers: **L0** is a ~100-token abstract per fact, **L1** is a ~2k-token overview grouped by category, and **L2** is full facts plus their source messages.
+
+**Trust.** Each derived fact starts at trust 0.5. Feedback moves it by +0.05 (helpful) or −0.10 (unhelpful), which also feeds the existing usage counters. Re-observing a fact raises it a little. Trust re-ranks recall (×0.6 to ×1.4) and decides who makes the peer card.
+
+**Limits.** Fact quality depends on the model you point it at. Small local models extract less and decide worse. The default local embedder is a sparse-hash projection that works mostly on wording, so it misses paraphrases. Set `MNEMO_EMBED_URL` for real embeddings, and don't switch embedding models on an existing DB, because vectors of different sizes never match each other. If the endpoint is down, the queue just waits, with backoff from 5 s up to 15 min. When a batch fails it is retried as a whole, so a re-run can bump trust on facts that already got written. Only redacted message text and fact text are sent to the LLM provider.
+
+### Quickstart
+
+```bash
+# OpenRouter
+export MNEMO_LLM_URL=https://openrouter.ai/api/v1
+export MNEMO_LLM_KEY=sk-or-...            # never shown in the dashboard or status API
+export MNEMO_LLM_MODEL=openai/gpt-4o-mini
+# optional real embeddings (any OpenAI-compatible /v1/embeddings)
+export MNEMO_EMBED_URL=https://openrouter.ai/api/v1 MNEMO_EMBED_KEY=$MNEMO_LLM_KEY MNEMO_EMBED_MODEL=openai/text-embedding-3-small
+
+# …or fully local with Ollama
+export MNEMO_LLM_URL=http://localhost:11434/v1
+export MNEMO_LLM_MODEL=qwen2.5:7b-instruct
+export MNEMO_EMBED_URL=http://localhost:11434/v1 MNEMO_EMBED_MODEL=nomic-embed-text
+
+mnemo serve                                # REST + dashboard + background deriver → http://127.0.0.1:8788/
+mnemo ingest "I prefer TypeScript and I'm based in Purwokerto" --peer user --session chat1
+mnemo derive --once                        # or let the daemon do it (every 5 s)
+mnemo profile                              # living summary + peer card
+mnemo facts                                # facts with confidence, trust, category
+mnemo ask "Which language should I use for this script?" --depth 2
+mnemo reflect                              # cross-memory insights (no topic = personal reflect)
+```
+
+Open **http://127.0.0.1:8788/** for the dashboard's **Personal Memory** section. It has the **Profile**, **Facts** (search/filter, trust/category/tier, click a fact for its source messages, correct, delete via cryptographic purge, mark helpful or unhelpful), **Ask** (cited answers) and **Deriver** (queue, last run, last error, endpoint/model; never the key) views. The daemon binds to 127.0.0.1, and when `MNEMO_AUTH_TOKEN` is set the dashboard uses the existing cookie session.
+
+| Endpoint | Purpose |
+| :--- | :--- |
+| `POST /v1/messages` | Ingest one message or `{messages:[…]}` (queued, idempotent) |
+| `GET /v1/peers/:peer/representation[?refresh=1]` · `POST /v1/peers/:peer/card` | Summary + peer card · pin/unpin a manual card |
+| `POST /v1/peers/:peer/ask` `{question, depth}` | Dialectic answer with citations / abstention |
+| `POST /v1/peers/:peer/context` · `GET /v1/peers/:peer/search?q=&tier=L0\|L1\|L2` | Fenced two-layer context · tiered recall |
+| `GET/PATCH/DELETE /v1/peers/:peer/facts[/:id]` · `POST …/facts/:id/feedback` | List/inspect (with provenance) · correct · purge · trust feedback |
+| `POST /v1/peers/:peer/conclusions` · `/checkpoint` · `/reflect` | Manual conclusion · pre-compression archive (idempotent) · insights |
+| `GET /v1/deriver/status` · `POST /v1/deriver/run` | Queue/last run/last error/endpoint · run now |
+
+The MCP tools are `ingest_messages`, `ask_about_user` and `get_user_representation`. The MCP process only queues messages, and the daemon (or `mnemo derive`) does the learning. Tuning variables: `MNEMO_DERIVER=off`, `MNEMO_DERIVER_INTERVAL_MS`, `MNEMO_DERIVER_BATCH`, `MNEMO_LLM_RPM`, `MNEMO_LLM_TIMEOUT_MS`, `MNEMO_REFLECT_EVERY`.
+
+### Hermes Agent memory provider (`mnemo-personal`)
+
+`integrations/hermes-plugin-mnemo-personal/` is a directory memory-provider plugin. It uses only the standard library and talks to the local daemon. **It is named `mnemo-personal`, not `mnemosyne`, because the Hermes catalog already has an unrelated `mnemosyne` provider.** The tools are prefixed `mnemo_` and the config lives in `$HERMES_HOME/mnemo-personal.json`.
+
+```bash
+cp -r integrations/hermes-plugin-mnemo-personal "$HERMES_HOME/plugins/mnemo-personal"
+hermes memory setup            # pick mnemo-personal; asks only for base_url (+ optional daemon token)
+```
+
+What the plugin does:
+
+- It sends each turn to `/v1/messages` through a durable outbox. This is non-blocking, delivers at least once, and the daemon dedupes it.
+- It injects a fenced base layer (summary, peer card and session summary) every `contextCadence` turns, adds query recall, and adds a dialectic supplement every `dialecticCadence` turns at `dialecticDepth`. All of this stays inside `contextTokens`.
+- `recallMode` can be `hybrid`, `context` or `tools`. `sessionStrategy` can be `per-directory`, `per-repo`, `per-session` or `global`.
+- It exposes six tools: `mnemo_profile`, `mnemo_search`, `mnemo_context`, `mnemo_ask`, `mnemo_conclude` and `mnemo_feedback`.
+- It advertises pre-compress checkpoint API v2 and mirrors built-in USER.md/MEMORY.md writes.
+- It skips automatic writes for `cron` and `subagent` agent contexts.
 
 ---
 
@@ -222,7 +296,7 @@ Add to your `mcpServers` configuration (`claude_desktop_config.json` or `opencod
 
 Start the zero-overhead HTTP daemon and visual dashboard:
 ```bash
-bun run src/server.ts
+mnemo serve            # or: bun run src/server.ts
 ```
 Visit **`http://localhost:8788/dashboard`** or **`http://localhost:8788/`** in your browser to inspect the interactive 2D Canvas Knowledge Graph, monitor active negative constraints, execute 1-click Context Doctor repairs, and view 24-hour activity digests!
 
@@ -308,7 +382,9 @@ mnemo backup restore ~/.mnemosyne/backups/mnemosyne-backup-1725450000000.db
 The engine is rigorously validated using comprehensive unit, integration, stress, and MemoryAgentBench benchmark test suites:
 
 ```bash
-bun test
+bun test                       # 183 tests (personal memory: test/personal_memory.test.ts, test/personal_api.test.ts — mock OpenAI-compatible server, no network)
+python3 -m unittest discover -s integrations/hermes-plugin-mnemo-personal/tests   # 11 plugin contract tests (Hermes stubbed)
+bun run typecheck
 ```
 ```text
 ✓ storage.test.ts (3 tests)
