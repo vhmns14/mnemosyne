@@ -73,4 +73,15 @@ export function initPeerSchema(db: Database): void {
       created_at INTEGER NOT NULL
     );
   `);
+  // Claim ownership (host:pid:nonce) so a crashed worker's batch is released at once,
+  // and a slow worker whose lease was taken over cannot complete someone else's claim.
+  const cols = db.query(`PRAGMA table_info(messages)`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "claimed_by")) {
+    try {
+      db.exec(`ALTER TABLE messages ADD COLUMN claimed_by TEXT`);
+    } catch (err) {
+      // Another process added it between our check and the ALTER.
+      if (!/duplicate column/i.test(String((err as Error)?.message))) throw err;
+    }
+  }
 }

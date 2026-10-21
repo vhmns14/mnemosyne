@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
+import { hostname } from "node:os";
 import { redactSecrets } from "./redact.ts";
 
 /**
@@ -219,20 +220,64 @@ export function recentMessages(db: Database, peer: string, session: string | nul
   return (rows as MessageRow[]).reverse();
 }
 
-const STALE_CLAIM_MS = 10 * 60 * 1000;
+/** Lease after which another worker may take over a claim (a live worker never needs this long). */
+export function staleClaimMs(): number {
+  const v = Number(process.env.MNEMO_STALE_CLAIM_MS);
+  return Number.isFinite(v) && v > 0 ? v : 10 * 60 * 1000;
+}
+
+const HOST = hostname();
+/** This process's claim owner tag: host:pid:nonce (nonce survives pid reuse). */
+export const CLAIM_OWNER = `${HOST}:${process.pid}:${randomBytes(4).toString("hex")}`;
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: exists but belongs to someone else.
+    return (err as NodeJS.ErrnoException)?.code === "EPERM";
+  }
+}
+
+/**
+ * Releases claims whose owner is gone: any claim older than the lease, and at
+ * once any claim held by a process on this host that no longer exists (a
+ * SIGKILLed daemon or CLI), so its batch is not stuck for the whole lease.
+ */
+export function releaseDeadClaims(db: Database, now = Date.now()): number {
+  let released = db
+    .prepare(`UPDATE messages SET status = 'pending', claimed_at = NULL, claimed_by = NULL WHERE status = 'processing' AND claimed_at < ?`)
+    .run(now - staleClaimMs()).changes;
+  const owners = db.query(`SELECT DISTINCT claimed_by FROM messages WHERE status = 'processing' AND claimed_by IS NOT NULL`).all() as Array<{
+    claimed_by: string;
+  }>;
+  for (const { claimed_by } of owners) {
+    const [host, pid] = claimed_by.split(":");
+    if (host !== HOST || claimed_by === CLAIM_OWNER) continue;
+    const n = Number(pid);
+    if (Number.isInteger(n) && n > 0 && !pidAlive(n)) {
+      released += db
+        .prepare(`UPDATE messages SET status = 'pending', claimed_at = NULL, claimed_by = NULL WHERE status = 'processing' AND claimed_by = ?`)
+        .run(claimed_by).changes;
+    }
+  }
+  return released;
+}
 
 /** Claims up to `limit` due messages of the peer with the oldest due message. */
-export function claimBatch(db: Database, limit: number, now = Date.now()): { peer: string; messages: MessageRow[] } | null {
-  // Release claims left behind by a crashed worker.
-  db.prepare(`UPDATE messages SET status = 'pending', claimed_at = NULL WHERE status = 'processing' AND claimed_at < ?`).run(
-    now - STALE_CLAIM_MS
-  );
-  const head = db
-    .query(`SELECT peer FROM messages WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY id LIMIT 1`)
-    .get(now) as { peer: string } | null;
-  if (!head) return null;
+export function claimBatch(db: Database, limit: number, now = Date.now(), owner = CLAIM_OWNER): { peer: string; messages: MessageRow[] } | null {
   let claimed: MessageRow[] = [];
+  let peer = "";
+  // IMMEDIATE: take the write lock before reading, so two processes (daemon +
+  // `mnemo derive`) can never claim the same rows or hit a BUSY lock upgrade.
   db.transaction(() => {
+    releaseDeadClaims(db, now);
+    const head = db
+      .query(`SELECT peer FROM messages WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY id LIMIT 1`)
+      .get(now) as { peer: string } | null;
+    if (!head) return;
+    peer = head.peer;
     const rows = db
       .query(`SELECT * FROM messages WHERE status = 'pending' AND next_attempt_at <= ? AND peer = ? ORDER BY id LIMIT ?`)
       .all(now, head.peer, limit) as MessageRow[];
@@ -243,17 +288,20 @@ export function claimBatch(db: Database, limit: number, now = Date.now()): { pee
       chars += r.content.length;
       claimed.push(r);
     }
-    const mark = db.prepare(`UPDATE messages SET status = 'processing', claimed_at = ? WHERE id = ? AND status = 'pending'`);
-    claimed = claimed.filter((r) => mark.run(now, r.id).changes > 0);
-    // IMMEDIATE: take the write lock before reading, so two processes (daemon +
-    // `mnemo derive`) can never claim the same rows or hit a BUSY lock upgrade.
+    const mark = db.prepare(`UPDATE messages SET status = 'processing', claimed_at = ?, claimed_by = ? WHERE id = ? AND status = 'pending'`);
+    claimed = claimed.filter((r) => mark.run(now, owner, r.id).changes > 0);
   }).immediate();
-  return claimed.length ? { peer: head.peer, messages: claimed } : null;
+  return claimed.length ? { peer, messages: claimed } : null;
 }
 
-export function completeBatch(db: Database, ids: number[]): void {
-  const stmt = db.prepare(`UPDATE messages SET status = 'done', claimed_at = NULL, last_error = NULL WHERE id = ?`);
-  db.transaction(() => ids.forEach((id) => stmt.run(id)))();
+/** Marks the batch done. Only rows still claimed by `owner` change (a lease another worker took over is theirs). */
+export function completeBatch(db: Database, ids: number[], owner = CLAIM_OWNER): number {
+  const stmt = db.prepare(
+    `UPDATE messages SET status = 'done', claimed_at = NULL, claimed_by = NULL, last_error = NULL WHERE id = ? AND status = 'processing' AND claimed_by = ?`
+  );
+  let n = 0;
+  db.transaction(() => ids.forEach((id) => (n += stmt.run(id, owner).changes))).immediate();
+  return n;
 }
 
 /** A batch whose LLM output keeps failing to parse is parked after this many tries (it would otherwise cost money forever). */
@@ -265,26 +313,27 @@ export const MAX_POISON_ATTEMPTS = 5;
  * content failures (malformed model output) are parked as 'skipped' with a
  * dead-letter note after MAX_POISON_ATTEMPTS so they stop spending tokens.
  */
-export function failBatch(db: Database, ids: number[], error: string, now = Date.now(), opts: { transient?: boolean } = {}): { parked: number } {
+export function failBatch(db: Database, ids: number[], error: string, now = Date.now(), opts: { transient?: boolean; owner?: string } = {}): { parked: number } {
+  const owner = opts.owner ?? CLAIM_OWNER;
   const msg = error.slice(0, 500);
   const retry = db.prepare(`
     UPDATE messages
-    SET status = 'pending', claimed_at = NULL, attempts = attempts + 1, last_error = ?,
+    SET status = 'pending', claimed_at = NULL, claimed_by = NULL, attempts = attempts + 1, last_error = ?,
         next_attempt_at = ? + MIN(900000, 5000 * (1 << MIN(attempts, 8)))
-    WHERE id = ?
+    WHERE id = ? AND status = 'processing' AND claimed_by = ?
   `);
   const park = db.prepare(`
-    UPDATE messages SET status = 'skipped', claimed_at = NULL, attempts = attempts + 1, last_error = ?
-    WHERE id = ? AND attempts + 1 >= ?
+    UPDATE messages SET status = 'skipped', claimed_at = NULL, claimed_by = NULL, attempts = attempts + 1, last_error = ?
+    WHERE id = ? AND attempts + 1 >= ? AND status = 'processing' AND claimed_by = ?
   `);
   let parked = 0;
   db.transaction(() => {
     for (const id of ids) {
-      if (!opts.transient && park.run(`dead-letter after ${MAX_POISON_ATTEMPTS} attempts: ${msg}`.slice(0, 500), id, MAX_POISON_ATTEMPTS).changes > 0) {
+      if (!opts.transient && park.run(`dead-letter after ${MAX_POISON_ATTEMPTS} attempts: ${msg}`.slice(0, 500), id, MAX_POISON_ATTEMPTS, owner).changes > 0) {
         parked++;
         continue;
       }
-      retry.run(msg, now, id);
+      retry.run(msg, now, id, owner);
     }
   }).immediate();
   return { parked };

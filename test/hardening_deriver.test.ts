@@ -196,12 +196,16 @@ describe("queue robustness", () => {
   test("malformed model output is dead-lettered after MAX_POISON_ATTEMPTS; endpoint outages retry forever", async () => {
     ingestMessages(db, [{ peer: "raka", content: "gue lagi belajar golang" }]);
     const id = (db.query("SELECT id FROM messages").get() as any).id;
-    for (let i = 0; i < MAX_POISON_ATTEMPTS - 1; i++) expect(failBatch(db, [id], "model reply was not valid JSON").parked).toBe(0);
-    expect(failBatch(db, [id], "model reply was not valid JSON").parked).toBe(1);
+    const claim = () => {
+      db.exec("UPDATE messages SET next_attempt_at = 0");
+      return claimBatch(db, 5)!.messages.map((m) => m.id);
+    };
+    for (let i = 0; i < MAX_POISON_ATTEMPTS - 1; i++) expect(failBatch(db, claim(), "model reply was not valid JSON").parked).toBe(0);
+    expect(failBatch(db, claim(), "model reply was not valid JSON").parked).toBe(1);
     expect(queueStats(db).dead_letter).toBe(1);
     expect(requeueDeadLetters(db)).toBe(1);
     expect(queueStats(db).pending).toBe(1);
-    for (let i = 0; i < MAX_POISON_ATTEMPTS * 2; i++) failBatch(db, [id], "llm http 503", Date.now(), { transient: true });
+    for (let i = 0; i < MAX_POISON_ATTEMPTS * 2; i++) failBatch(db, claim(), "llm http 503", Date.now(), { transient: true });
     expect(queueStats(db).pending).toBe(1);
   });
 

@@ -155,20 +155,25 @@ function union<T>(a: T[], b: T[]): T[] {
   return Array.from(new Set([...a, ...b]));
 }
 
-/** Re-observation: more evidence for an existing fact raises trust a little. */
-export function reinforceFact(db: Database, id: string, sourceMessageIds: number[] = [], sourceMemoryIds: string[] = []): void {
+/**
+ * Re-observation: more evidence for an existing fact raises trust a little.
+ * Idempotent per evidence: when every source message (and memory) is already
+ * attached — a retried or re-claimed batch re-deriving the same fact — nothing
+ * changes, so a crash/retry loop can never inflate trust. Returns whether it counted.
+ */
+export function reinforceFact(db: Database, id: string, sourceMessageIds: number[] = [], sourceMemoryIds: string[] = []): boolean {
   const row = db.query(`SELECT * FROM derived_facts WHERE memory_id = ?`).get(id) as any;
-  if (!row) return;
+  if (!row) return false;
+  const haveMsgs = parseIds<number>(row.source_message_ids);
+  const haveMems = parseIds<string>(row.source_memory_ids);
+  const newMsgs = sourceMessageIds.filter((m) => !haveMsgs.includes(m));
+  const newMems = sourceMemoryIds.filter((m) => !haveMems.includes(m));
+  if ((sourceMessageIds.length > 0 || sourceMemoryIds.length > 0) && newMsgs.length === 0 && newMems.length === 0) return false;
   const now = Date.now();
   db.prepare(
     `UPDATE derived_facts SET observations = observations + 1, trust = MIN(1.0, trust + ?), source_message_ids = ?, source_memory_ids = ?, updated_at = ? WHERE memory_id = ?`
-  ).run(
-    TRUST_REOBSERVED,
-    JSON.stringify(union(parseIds<number>(row.source_message_ids), sourceMessageIds)),
-    JSON.stringify(union(parseIds<string>(row.source_memory_ids), sourceMemoryIds)),
-    now,
-    id
-  );
+  ).run(TRUST_REOBSERVED, JSON.stringify(union(haveMsgs, sourceMessageIds)), JSON.stringify(union(haveMems, sourceMemoryIds)), now, id);
+  return true;
 }
 
 /**
