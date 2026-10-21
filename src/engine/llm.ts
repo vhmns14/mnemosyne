@@ -85,10 +85,32 @@ export function parseJsonReply(text: string): any {
   try {
     return JSON.parse(cleaned);
   } catch {
+    // First balanced top-level object, string-aware. Real models (gemini-2.5-flash-lite)
+    // emit a complete object and then degenerate trailing junk ('}}\n."}}\njob."}}...');
+    // slicing to the LAST '}' swallowed the junk and lost a perfectly good reply.
     const start = cleaned.indexOf("{");
-    const end = cleaned.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      return JSON.parse(cleaned.slice(start, end + 1));
+    if (start >= 0) {
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      for (let i = start; i < cleaned.length; i++) {
+        const ch = cleaned[i];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (ch === "\\") esc = true;
+          else if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') inStr = true;
+        else if (ch === "{") depth++;
+        else if (ch === "}" && --depth === 0) {
+          try {
+            return JSON.parse(cleaned.slice(start, i + 1));
+          } catch {
+            break;
+          }
+        }
+      }
     }
     throw new LlmError("model reply was not valid JSON", true);
   }

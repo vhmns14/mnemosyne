@@ -345,14 +345,20 @@ export async function deriveBatch(db: Database, llm: LlmClient, peer: string, me
   }
 
   // ---- guard rails on destructive decisions
+  // One destructive decision per target per batch: a real model pointed two UPDATEs at
+  // the same fact ("lives in Surabaya" -> "moved from Malang to Surabaya" and -> "moved
+  // to Surabaya"); the second superseded an already-superseded row and overwrote its
+  // superseded_by link. Later claims on a taken target are kept as plain ADDs.
+  const claimedTargets = new Set<string>();
   for (const p of planned) {
     if ((p.action !== "UPDATE" && p.action !== "DELETE") || !p.target) continue;
     const target = getFactRow(db, p.target);
-    if (!target || target.peer !== peer || !target.is_active) {
+    if (!target || target.peer !== peer || !target.is_active || claimedTargets.has(p.target)) {
       p.action = "ADD";
       p.target = undefined;
       continue;
     }
+    claimedTargets.add(p.target);
     if (!p.candidate.from_user || PROTECTED_KINDS.has(target.kind)) {
       // Assistant/tool-only evidence never replaces a fact, and nothing the deriver
       // infers silently overrides what the person set by hand: keep both, the new
@@ -432,7 +438,6 @@ export interface DeriveRunResult {
   skipped_reason?: string;
 }
 
-/** Processes due batches until the queue is drained, an error occurs, or maxBatches is hit. */
 /**
  * deriveBatch, but a reply cut off at max_tokens (deterministic for that input) halves
  * the batch and derives each half, down to single messages, instead of failing the
@@ -460,6 +465,7 @@ export async function deriveSplitting(db: Database, llm: LlmClient, peer: string
   }
 }
 
+/** Processes due batches until the queue is drained, an error occurs, or maxBatches is hit. */
 export async function runDeriverOnce(db: Database, llm: LlmClient | null, opts: { maxBatches?: number; batchSize?: number } = {}): Promise<DeriveRunResult> {
   const result: DeriveRunResult = { batches: [], failed: 0, error: null };
   setMeta(db, "deriver.last_run_at", String(Date.now()));

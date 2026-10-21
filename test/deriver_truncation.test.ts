@@ -58,3 +58,49 @@ describe("truncated JSON replies", () => {
     expect(queueStats(db).pending).toBe(0);
   });
 });
+
+describe("real-model reply shapes", () => {
+  test("parseJsonReply keeps a complete object followed by degenerate junk", async () => {
+    const { parseJsonReply } = await import("../src/engine/llm.ts");
+    const junk = '{"facts":[{"content":"a } tricky \\" string {"}],"session_summaries":{"s1":"ok."}}\n}}\n."}}\njob."}}\n."}}';
+    expect(parseJsonReply(junk)).toEqual({ facts: [{ content: 'a } tricky " string {' }], session_summaries: { s1: "ok." } });
+    expect(() => parseJsonReply('{"facts":[{"content":"cut')).toThrow();
+  });
+
+  test("two UPDATE decisions on the same target: only the first supersedes it, the second is an ADD", async () => {
+    mock.reset();
+    const db = new Database(":memory:");
+    initSchema(db);
+    const llm = new LlmClient({ url: mock.baseUrl, model: "m", backoffMs: 1, maxRetries: 0 });
+    const { addDerivedFact, getFactRow } = await import("../src/engine/facts.ts");
+    const { idsIn } = await import("./helpers/mock_openai.ts");
+    const old = await addDerivedFact(db, { peer: "dina", content: "dina lives in Surabaya", kind: "explicit", category: "profile" });
+    mock.handlers.extract = (call) => ({
+      facts: parseTranscript(call.user).map((m) => ({
+        content: m.text.includes("Malang") ? "dina moved from Malang to Surabaya last year" : "dina moved to Surabaya for her job",
+        kind: "explicit",
+        category: "profile",
+        confidence: 0.9,
+        source_message_ids: [m.id],
+      })),
+      session_summaries: {},
+    });
+    mock.handlers.decide = (call) => {
+      const target = idsIn(call.user).find((id) => id === old.id)!;
+      return { decisions: [0, 1].map((index) => ({ index, action: "UPDATE", target_id: target, content: "" })) };
+    };
+    ingestMessages(db, [
+      { peer: "dina", session: "s1", role: "user", content: "I moved from Malang to Surabaya last year" },
+      { peer: "dina", session: "s1", role: "user", content: "I moved to Surabaya for my job here" },
+    ]);
+    const res = await runDeriverOnce(db, llm);
+    expect(res.error).toBeNull();
+    expect(mock.callsOf("decide").length).toBe(1);
+    expect(res.batches[0].updated).toBe(1);
+    expect(res.batches[0].added).toBe(1);
+    const oldRow = db.query("SELECT is_active, superseded_by_id FROM memories WHERE id = ?").get(old.id) as any;
+    expect(oldRow.is_active).toBe(0);
+    expect(getFactRow(db, oldRow.superseded_by_id)?.is_active).toBeTruthy();
+    expect(listFacts(db, "dina", { limit: 10 }).length).toBe(2);
+  });
+});
