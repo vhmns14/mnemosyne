@@ -144,6 +144,8 @@ export interface NewFact {
   actor?: string;
   /** Epoch ms after which the fact stops being true (temporary facts). */
   valid_until?: number | null;
+  /** false: a dedupe hit is not counted as re-observation (no trust nudge). */
+  reinforce?: boolean;
 }
 
 export interface FactWriteResult {
@@ -213,7 +215,7 @@ export async function addDerivedFact(db: Database, fact: NewFact): Promise<FactW
     throw new Error(`dedupe crossed peers (${fact.peer} -> ${existing.peer})`);
   }
   if (existing) {
-    reinforceFact(db, id, fact.source_message_ids ?? [], fact.source_memory_ids ?? []);
+    if (fact.reinforce !== false) reinforceFact(db, id, fact.source_message_ids ?? [], fact.source_memory_ids ?? []);
     return { id, action: "reinforced" };
   }
   const now = Date.now();

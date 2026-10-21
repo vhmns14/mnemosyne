@@ -47,6 +47,8 @@ export interface Candidate {
   from_user?: boolean;
   /** Epoch ms after which a temporary fact stops being true. */
   valid_until?: number;
+  /** The model gave no valid source ids; the batch's user messages were assumed. Such a candidate never counts as re-observation evidence. */
+  assumed_sources?: boolean;
 }
 
 export type DecisionAction = "ADD" | "UPDATE" | "DELETE" | "NOOP";
@@ -144,9 +146,12 @@ export function parseCandidates(raw: any, batchIds: Set<number>, userIds: number
     if (!f || typeof f.content !== "string") continue;
     const content = redactSecrets(f.content.trim()).text.slice(0, 600);
     if (content.length < 4 || /\[REDACTED/.test(content)) continue;
+    // A "fact" that is only the peer's name (or stopwords) says nothing (real run stored "raka").
+    if (peer && !saysSomething(content, peer)) continue;
     let ids = Array.isArray(f.source_message_ids) ? f.source_message_ids.map(Number).filter((n: number) => batchIds.has(n)) : [];
     // Invented or missing ids: attribute to the batch's user messages (never to nothing).
-    if (ids.length === 0) ids = userIds;
+    const assumed = ids.length === 0;
+    if (assumed) ids = userIds;
     const conf = Number(f.confidence);
     const object = typeof f.object === "string" ? redactSecrets(f.object).text : "";
     const entities =
@@ -171,6 +176,7 @@ export function parseCandidates(raw: any, batchIds: Set<number>, userIds: number
       entities: entities && entities[0].predicate ? entities : undefined,
       from_user: sourceIds.some((id) => userSet.has(id)),
       valid_until: parseValidUntil(f.valid_until, now),
+      assumed_sources: assumed || undefined,
     });
   }
   return out;
@@ -193,6 +199,16 @@ const STOPWORDS = new Set(
     .concat("yang dan atau di ke dari itu ini ada gak ga nggak tidak bukan aku gue gw saya kamu dia sama buat untuk lagi udah sudah sekarang lebih kalo kalau jadi juga aja banget")
     .split(/\s+/)
 );
+
+/** False for text that is only the peer's name, stopwords and punctuation ("raka", "Raka."). */
+export function saysSomething(text: string, peer: string): boolean {
+  const p = peer.toLowerCase();
+  return text
+    .toLowerCase()
+    .normalize("NFKD")
+    .split(/[^\p{L}\p{N}]+/u)
+    .some((t) => t && t !== p && !STOPWORDS.has(t) && (t.length > 1 || /\d/.test(t)));
+}
 
 function contentTokens(text: string, peer: string): Set<string> {
   const p = peer.toLowerCase();
@@ -364,7 +380,9 @@ export async function deriveBatch(db: Database, llm: LlmClient, peer: string, me
       valid_until: c.valid_until,
     };
     if (p.action === "NOOP" && p.target) {
-      reinforceFact(db, p.target, c.source_message_ids);
+      // A known fact the model merely repeated (often from the "already known" list)
+      // without pointing at a message that says it is not new evidence.
+      if (!c.assumed_sources) reinforceFact(db, p.target, c.source_message_ids);
       report.noop++;
       continue;
     }
@@ -391,7 +409,7 @@ export async function deriveBatch(db: Database, llm: LlmClient, peer: string, me
       else report.deleted++;
       continue;
     }
-    const res = await addDerivedFact(db, { ...base, content: c.content, trust: p.trust ?? initialTrust(c) });
+    const res = await addDerivedFact(db, { ...base, content: c.content, trust: p.trust ?? initialTrust(c), reinforce: !c.assumed_sources });
     report.fact_ids.push(res.id);
     if (res.action === "added") report.added++;
     else report.noop++;

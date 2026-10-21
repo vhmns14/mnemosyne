@@ -91,7 +91,8 @@ describe("idempotent re-observation", () => {
     const mock = new MockOpenAI();
     try {
       const llm = new LlmClient({ url: mock.baseUrl, apiKey: "k", model: "mock", backoffMs: 1, maxRetries: 0 });
-      mock.handlers.extract = () => ({ facts: [{ content: "raka prefers helix over neovim", category: "preferences", confidence: 0.9, source_message_ids: [] }], session_summaries: {} });
+      let ids = [1];
+      mock.handlers.extract = () => ({ facts: [{ content: "raka prefers helix over neovim", category: "preferences", confidence: 0.9, source_message_ids: ids }], session_summaries: {} });
       ingestMessages(db, [{ peer: "raka", content: "sekarang gue pake helix, bukan neovim lagi" }]);
       await runDeriverOnce(db, llm);
       const first = listFacts(db, "raka")[0];
@@ -105,6 +106,7 @@ describe("idempotent re-observation", () => {
       expect(after[0].observations).toBe(1);
       // Genuinely new evidence (another message) still counts.
       ingestMessages(db, [{ peer: "raka", content: "helix enak banget, gue gak balik ke neovim" }]);
+      ids = [2];
       await runDeriverOnce(db, llm);
       const third = listFacts(db, "raka")[0];
       expect(third.observations).toBe(2);
@@ -147,5 +149,44 @@ describe("checkpoint after a session switch (real Hermes run)", () => {
     expect((db.query("SELECT COUNT(*) c FROM messages").get() as any).c).toBe(3);
     // Another peer saying the same words is still its own evidence.
     expect(checkpointTranscript(db, "sinta", "s2", turns).queued).toBe(2);
+  });
+});
+
+describe("deriver evidence hygiene (real-model findings)", () => {
+  test("a 'fact' that is only the peer's name is dropped; short real facts survive", async () => {
+    const { parseCandidates } = await import("../src/engine/deriver.ts");
+    const out = parseCandidates({ facts: [{ content: "raka" }, { content: "Raka." }, { content: "raka is 27" }, { content: "raka has a cat" }] }, new Set([1]), [1], "raka");
+    expect(out.map((c) => c.content)).toEqual(["raka is 27", "raka has a cat"]);
+  });
+
+  test("a known fact the model repeats without a valid source id is not re-observation (no trust nudge)", async () => {
+    const { MockOpenAI } = await import("./helpers/mock_openai.ts");
+    const { LlmClient } = await import("../src/engine/llm.ts");
+    const { runDeriverOnce } = await import("../src/engine/deriver.ts");
+    const { listFacts } = await import("../src/engine/facts.ts");
+    const mock = new MockOpenAI();
+    try {
+      const llm = new LlmClient({ url: mock.baseUrl, apiKey: "k", model: "mock", backoffMs: 1, maxRetries: 0 });
+      let ids: number[] = [];
+      mock.handlers.extract = () => ({ facts: [{ content: "raka gets palpitations from coffee", category: "profile", confidence: 0.9, source_message_ids: ids }], session_summaries: {} });
+      ingestMessages(db, [{ peer: "raka", content: "kopi bikin gue deg-degan" }]);
+      ids = [1];
+      await runDeriverOnce(db, llm);
+      const before = listFacts(db, "raka")[0];
+      // Next batch is about something else; the model re-emits the known fact with no/invented ids.
+      ids = [999];
+      ingestMessages(db, [{ peer: "raka", content: "gue lagi belajar Rust buat side project" }]);
+      await runDeriverOnce(db, llm);
+      const after = listFacts(db, "raka").find((f) => f.content.includes("palpitations"))!;
+      expect(after.observations).toBe(1);
+      expect(after.trust).toBeCloseTo(before.trust, 5);
+      // When the model points at a message that really says it again, it counts.
+      ingestMessages(db, [{ peer: "raka", content: "serius, kopi bikin gue deg-degan terus" }]);
+      ids = [3];
+      await runDeriverOnce(db, llm);
+      expect(listFacts(db, "raka").find((f) => f.content.includes("palpitations"))!.observations).toBe(2);
+    } finally {
+      mock.stop();
+    }
   });
 });
