@@ -206,7 +206,10 @@ export class LlmClient {
         this.jsonModeSupported = false;
         return this.once(messages, opts);
       }
-      const retryable = res.status === 429 || res.status >= 500 || res.status === 408;
+      // OpenRouter answers 402 "in_flight_budget_exhausted" when concurrent requests briefly
+      // reserve the key's remaining budget: that one clears on its own, unlike "out of credits".
+      const transient402 = res.status === 402 && /in_flight|retry after/i.test(text);
+      const retryable = res.status === 429 || res.status >= 500 || res.status === 408 || transient402;
       throw new LlmError(`llm http ${res.status}: ${text}`, retryable, res.status);
     }
 

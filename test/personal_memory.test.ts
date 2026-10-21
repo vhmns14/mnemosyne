@@ -176,9 +176,11 @@ describe("Deriver", () => {
       for (const b of blocks) {
         const idx = Number(b.match(/^Candidate (\d+)/)?.[1]);
         const ids = idsIn(b);
-        if (b.includes("stopped drinking coffee")) decisions.push({ index: idx, action: "DELETE", target_id: coffee.id });
-        else if (b.includes("neovim")) decisions.push({ index: idx, action: "NOOP", target_id: editor.id });
-        else if (b.includes("Flutter")) decisions.push({ index: idx, action: "UPDATE", target_id: city.id, content: "alice works on a mobile banking app built with Flutter" });
+        // Decide on the candidate line only: neighbor lists may include other related facts.
+        const cand = b.split("\n")[0];
+        if (cand.includes("stopped drinking coffee")) decisions.push({ index: idx, action: "DELETE", target_id: coffee.id });
+        else if (cand.includes("neovim")) decisions.push({ index: idx, action: "NOOP", target_id: editor.id });
+        else if (cand.includes("Flutter")) decisions.push({ index: idx, action: "UPDATE", target_id: city.id, content: "alice works on a mobile banking app built with Flutter" });
         else decisions.push({ index: idx, action: "ADD", target_id: ids[0] ?? "" });
       }
       return { decisions };
@@ -268,9 +270,10 @@ describe("Deriver", () => {
 describe("Dialectic ask", () => {
   test("answers with validated citations; depth 3 runs answer, audit, reconcile", async () => {
     const f = await addDerivedFact(db, { peer: "alice", content: "alice prefers TypeScript over Python", category: "preferences" });
-    mock.handlers.ask = (call) => ({ answer: "She prefers TypeScript.", citations: [idsIn(call.user)[0], "00000000-0000-0000-0000-000000000000"], abstain: false });
-    mock.handlers.audit = (call) => ({ answer: "Alice prefers TypeScript over Python.", citations: [idsIn(call.user)[0]], abstain: false });
-    mock.handlers.reconcile = (call) => ({ answer: "Alice prefers TypeScript over Python.", citations: [idsIn(call.user)[0]], abstain: false });
+    mock.handlers.ask = (call) => ({ answer: "She prefers TypeScript.", citations: ["m1", "m99", "00000000-0000-0000-0000-000000000000"], abstain: false });
+    mock.handlers.audit = (call) => ({ answer: "Alice prefers TypeScript over Python.", citations: [call.user.includes('"citations":["m1"]') ? "[m1]" : "m42"], abstain: false });
+    // a full fact id is still accepted
+    mock.handlers.reconcile = () => ({ answer: "Alice prefers TypeScript over Python.", citations: [f.id], abstain: false });
     const res = await askPeer(db, llm, "alice", "Which programming language does alice prefer, TypeScript or Python?", { depth: 3 });
     expect(res.abstained).toBe(false);
     expect(res.citations.map((c) => c.id)).toEqual([f.id]);

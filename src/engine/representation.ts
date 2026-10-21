@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { searchHybrid } from "./hybrid.ts";
+import { getEmbedding, cosineSimilarity, decodeVector } from "./embedder.ts";
 import { cardFacts, getFactRow, listFacts, renderTier, truncateTokens, estimateTokens, type FactRow, type Tier, type TieredItem } from "./facts.ts";
 import { fenceContext, getFenceNonce } from "./messages.ts";
 import { redactSecrets } from "./redact.ts";
@@ -23,20 +24,67 @@ export interface Representation {
   updated_at: number | null;
 }
 
-/** Peer-scoped hybrid recall (existing searchHybrid) re-ranked by trust. */
+/**
+ * Peer-scoped recall re-ranked by trust. Runs the engine's hybrid search and,
+ * because that search ranks across every memory in the store (other peers, dev
+ * memories) and its lexical leg misses paraphrases ("where does she live" vs
+ * "moved to Jakarta"), also scores this peer's own facts directly (embedding +
+ * content-word overlap) and keeps the best of both.
+ */
 export async function peerRecall(db: Database, peer: string, query: string, limit = 8): Promise<Array<FactRow & { score: number }>> {
   if (!query.trim()) return [];
+  const best = new Map<string, number>();
   const hits = await searchHybrid(db, { query, limit: Math.max(40, limit * 5), min_relevance: 0.05, scope: "all" });
+  for (const h of hits) if (h.peer === peer) best.set(h.id, Math.max(best.get(h.id) ?? 0, h.score));
+  for (const d of await directPeerScores(db, peer, query)) best.set(d.id, Math.max(best.get(d.id) ?? 0, d.score));
   const out: Array<FactRow & { score: number }> = [];
-  for (const h of hits) {
-    if (h.peer !== peer) continue;
-    const fact = getFactRow(db, h.id);
-    if (!fact || !fact.is_active) continue;
+  for (const [id, score] of best) {
+    const fact = getFactRow(db, id);
+    if (!fact || !fact.is_active || fact.peer !== peer) continue;
     // Trust 0.5 is neutral (x1.0); 1.0 -> x1.4; 0.0 -> x0.6.
-    out.push({ ...fact, score: Number((h.score * (0.6 + 0.8 * fact.trust)).toFixed(4)) });
+    out.push({ ...fact, score: Number((score * (0.6 + 0.8 * fact.trust)).toFixed(4)) });
   }
   out.sort((a, b) => b.score - a.score);
   return out.slice(0, limit);
+}
+
+const RECALL_STOP = new Set(
+  "a an the and or of to in on at for with from by is are was were be does do did what where when which who how why now still these days usually raka's yang dan di ke dari apa siapa mana kapan gimana sekarang lagi sih".split(" ")
+);
+
+async function directPeerScores(db: Database, peer: string, query: string): Promise<Array<{ id: string; score: number }>> {
+  const rows = db
+    .query(
+      `SELECT m.id, m.content, v.vector FROM derived_facts d JOIN memories m ON m.id = d.memory_id
+       LEFT JOIN memory_vectors v ON v.memory_id = m.id
+       WHERE d.peer = ? AND m.is_active = 1 ORDER BY d.updated_at DESC LIMIT 500`
+    )
+    .all(peer) as Array<{ id: string; content: string; vector: any }>;
+  if (rows.length === 0) return [];
+  const toks = (t: string) =>
+    new Set(
+      t
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+        .split(/\s+/)
+        .filter((w) => w.length > 2 && !RECALL_STOP.has(w) && w !== peer.toLowerCase())
+        // crude stemming so "lives"/"live"/"living" and "codes"/"coding" meet
+        .map((w) => w.replace(/(ing|es|s|ed)$/, ""))
+    );
+  const qt = toks(query);
+  const qv = await getEmbedding(query);
+  const out: Array<{ id: string; score: number }> = [];
+  for (const r of rows) {
+    const v = decodeVector(r.vector);
+    const cos = v ? Math.max(0, cosineSimilarity(qv, v)) : 0;
+    const ft = toks(r.content);
+    let inter = 0;
+    for (const t of qt) if (ft.has(t)) inter++;
+    const lex = qt.size ? inter / qt.size : 0;
+    const score = 0.5 * cos + 0.5 * lex;
+    if (score >= 0.08) out.push({ id: r.id, score });
+  }
+  return out;
 }
 
 export function getRepresentation(db: Database, peer: string): Representation {

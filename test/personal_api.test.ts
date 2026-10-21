@@ -49,7 +49,7 @@ beforeAll(() => {
     session_summaries: { web: "Carol shared preferences." },
   });
   mock.handlers.summary = () => ({ summary: "Carol prefers dark mode and lives in Bandung." });
-  mock.handlers.ask = (c) => ({ answer: "Carol prefers dark mode.", citations: idsIn(c.user).slice(0, 1), abstain: false });
+  mock.handlers.ask = (c) => ({ answer: "Carol prefers dark mode.", citations: ["m1"], abstain: false });
 });
 
 afterAll(() => {

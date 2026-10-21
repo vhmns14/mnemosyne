@@ -363,3 +363,76 @@ describe("ingest hygiene", () => {
     expect(row.session).toBe("s[31m1");
   });
 });
+
+describe("supersede recall", () => {
+  test("a changed preference reaches the decision step even when embeddings barely overlap (real-LLM run left both coffee facts active)", async () => {
+    const { similarFacts } = await import("../src/engine/deriver.ts");
+    const old = await addDerivedFact(db, { peer: "raka", content: "Raka prefers kopi susu gula aren over kopi item pahit.", category: "preferences" });
+    await addDerivedFact(db, { peer: "raka", content: "Raka owns a cat named Mochi.", category: "entities" });
+    const n = await similarFacts(db, "raka", "Raka now prefers teh tarik over kopi susu because he is reducing caffeine.");
+    expect(n.map((x) => x.id)).toContain(old.id);
+    mock.handlers.extract = () => ({ facts: [{ content: "Raka now prefers teh tarik over kopi susu because he is reducing caffeine.", category: "preferences", source_message_ids: [] }], session_summaries: {} });
+    mock.handlers.decide = (call) => {
+      const id = call.user.match(/id=([0-9a-f-]{36}): Raka prefers kopi susu/)?.[1];
+      return { decisions: [{ index: 0, action: "DELETE", target_id: id }] };
+    };
+    ingestMessages(db, [{ peer: "raka", content: "sekarang gue lebih suka teh tarik daripada kopi susu, lagi ngurangin kafein" }]);
+    await runDeriverOnce(db, llm);
+    expect(getFactRow(db, old.id)!.is_active).toBe(false);
+  });
+});
+
+describe("LLM error classification", () => {
+  test("OpenRouter 402 in_flight_budget_exhausted is retried; plain 402 (no credits) is not", async () => {
+    let n = 0;
+    const srv = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () =>
+        ++n === 1
+          ? new Response(JSON.stringify({ error: { code: 402, metadata: { reason: "in_flight_budget_exhausted" } } }), { status: 402 })
+          : Response.json({ choices: [{ message: { content: '{"ok":true}' } }] }),
+    });
+    const noCredit = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response('{"error":{"message":"Insufficient credits"}}', { status: 402 }) });
+    try {
+      const c = new LlmClient({ url: `http://127.0.0.1:${srv.port}/v1`, model: "m", maxRetries: 2, backoffMs: 1 });
+      expect(await c.chatJSON([{ role: "user", content: "x" }])).toEqual({ ok: true });
+      const d = new LlmClient({ url: `http://127.0.0.1:${noCredit.port}/v1`, model: "m", maxRetries: 2, backoffMs: 1 });
+      await expect(d.chat([{ role: "user", content: "x" }])).rejects.toMatchObject({ retryable: false, status: 402 });
+    } finally {
+      srv.stop(true);
+      noCredit.stop(true);
+    }
+  });
+});
+
+describe("dialectic citations", () => {
+  test("memories are labelled m1..mN; a mangled UUID from the model is not needed (real run lost a correct answer that way)", async () => {
+    const { askPeer } = await import("../src/engine/insights.ts");
+    const f = await addDerivedFact(db, { peer: "raka", content: "Raka's wife is named Sinta and she is a lecturer at UI.", category: "profile" });
+    mock.handlers.ask = (call) => {
+      expect(call.user).toContain("[m1]");
+      expect(call.user).not.toContain(f.id);
+      return { answer: "Raka's wife is Sinta.", citations: ["m1"], abstain: false };
+    };
+    mock.handlers.audit = () => ({ answer: "Raka's wife is Sinta.", citations: ["m1"], abstain: false });
+    mock.handlers.reconcile = () => ({ answer: "Raka's wife is Sinta.", citations: [f.id + "3a3f"], abstain: false });
+    const mangled = await askPeer(db, llm, "raka", "What is the name of Raka's wife?", { depth: 3 });
+    expect(mangled.abstained).toBe(true); // an unresolvable citation is still never trusted
+    mock.handlers.reconcile = () => ({ answer: "Raka's wife is Sinta.", citations: ["m1"], abstain: false });
+    const ok = await askPeer(db, llm, "raka", "What is the name of Raka's wife?", { depth: 3 });
+    expect(ok.abstained).toBe(false);
+    expect(ok.citations[0].id).toBe(f.id);
+  });
+
+  test("a paraphrased question still sees the core facts (card) — recall used to miss 'where does X live' vs 'moved to Jakarta'", async () => {
+    const { askPeer } = await import("../src/engine/insights.ts");
+    const f = await addDerivedFact(db, { peer: "raka", content: "Raka has moved to Jakarta and works in Sudirman.", category: "profile" });
+    await addDerivedFact(db, { peer: "raka", content: "Raka prefers teh tarik.", category: "preferences" });
+    let shown = "";
+    mock.handlers.ask = (call) => ((shown = call.user), { answer: "Jakarta.", citations: ["m1"], abstain: false });
+    await askPeer(db, llm, "raka", "Where does Raka live now?");
+    expect(shown).toContain("moved to Jakarta");
+    void f;
+  });
+});
