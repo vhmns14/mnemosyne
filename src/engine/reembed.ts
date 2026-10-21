@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { configuredEmbeddingModel, embeddingModelOf, getEmbedding, storeVector } from "./embedder.ts";
+import { configuredEmbeddingModel, cosineSimilarity, decodeVector, embeddingModelOf, getEmbedding, LOCAL_EMBEDDING_MODEL, storeVector } from "./embedder.ts";
+import { LEGACY_UNKNOWN_MODEL } from "../db/schema.ts";
 
 export interface ReembedReport {
   target_model: string;
@@ -60,4 +61,70 @@ export async function reembedMismatched(
     report.reembedded++;
   }
   return report;
+}
+
+export interface LegacyVerifyReport {
+  target_model: string;
+  checked: number;
+  /** Proven (cosine >= threshold vs a fresh embedding) and re-tagged with target_model. */
+  tagged: number;
+  /** Did not match; left as unknown:legacy for `mnemo reembed`. */
+  unmatched: number;
+  skipped_reason?: string;
+}
+
+/**
+ * Sample-reembed check for legacy vectors of unknown origin. Only runs when a remote
+ * model is configured. Each checked row is re-embedded with the configured model; when
+ * the fresh vector has the same dimension and cosine >= threshold (default 0.99) with
+ * the stored one, the stored vector provably came from that model and is re-tagged
+ * (vector kept). Anything else stays unknown:legacy. Bounded by `limit` per run and
+ * stops at the first provider fallback.
+ */
+export async function verifyLegacyVectors(
+  db: Database,
+  opts: { limit?: number; threshold?: number } = {}
+): Promise<LegacyVerifyReport> {
+  const target = configuredEmbeddingModel();
+  const report: LegacyVerifyReport = { target_model: target, checked: 0, tagged: 0, unmatched: 0 };
+  if (target === LOCAL_EMBEDDING_MODEL) {
+    report.skipped_reason = "no remote embedding model configured";
+    return report;
+  }
+  const threshold = opts.threshold ?? 0.99;
+  const rows = db
+    .query(
+      `SELECT v.memory_id, v.vector, v.dimension, m.content FROM memory_vectors v JOIN memories m ON m.id = v.memory_id
+       WHERE v.model = ? ORDER BY m.updated_at DESC LIMIT ?`
+    )
+    .all(LEGACY_UNKNOWN_MODEL, opts.limit ?? 20) as Array<{ memory_id: string; vector: any; dimension: number; content: string }>;
+  const tag = db.prepare("UPDATE memory_vectors SET model = ? WHERE memory_id = ? AND model = ?");
+  for (const r of rows) {
+    const fresh = await getEmbedding(r.content);
+    if (embeddingModelOf(fresh) !== target) {
+      report.skipped_reason = "embedding provider unreachable";
+      break;
+    }
+    report.checked++;
+    const stored = decodeVector(r.vector);
+    if (stored && stored.length === fresh.length && cosineSimilarity(stored, fresh) >= threshold) {
+      tag.run(target, r.memory_id, LEGACY_UNKNOWN_MODEL);
+      report.tagged++;
+    } else {
+      report.unmatched++;
+    }
+  }
+  return report;
+}
+
+/** One-line daemon hint when unknown:legacy vectors exist, else null. */
+export function legacyVectorHint(db: Database): string | null {
+  let n = 0;
+  try {
+    n = (db.query("SELECT COUNT(*) AS n FROM memory_vectors WHERE model = ?").get(LEGACY_UNKNOWN_MODEL) as { n: number }).n;
+  } catch {
+    return null;
+  }
+  if (!n) return null;
+  return `[mnemo] ${n} legacy vector(s) of unknown model are excluded from vector search (lexical fallback); run \`mnemo reembed\` to re-embed them.`;
 }

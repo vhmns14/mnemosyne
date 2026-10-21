@@ -89,7 +89,7 @@ describe("embedding model identity", () => {
     expect(d?.vector_score ?? 0).toBe(0);
   });
 
-  test("legacy DB migrates in place: reproducible local vectors -> local, others -> legacy:unknown", async () => {
+  test("legacy DB migrates in place: reproducible local vectors -> local, others -> unknown:legacy", async () => {
     const db = fresh();
     const local = await rememberMemory(db, { content: "legacy local row about wal mode" });
     const foreign = await rememberMemory(db, { content: "legacy row embedded remotely" });
@@ -104,8 +104,8 @@ describe("embedding model identity", () => {
     initSchema(db); // migration runs on open
     const model = (id: string) => (db.query("SELECT model FROM memory_vectors WHERE memory_id = ?").get(id) as any).model;
     expect(model(local)).toBe(LOCAL_EMBEDDING_MODEL);
-    expect(model(foreign)).toBe("legacy:unknown");
-    expect(model(wide)).toBe("legacy:unknown");
+    expect(model(foreign)).toBe("unknown:legacy");
+    expect(model(wide)).toBe("unknown:legacy");
     initSchema(db); // idempotent
     expect(model(local)).toBe(LOCAL_EMBEDDING_MODEL);
   });

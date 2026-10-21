@@ -7,6 +7,7 @@ import { getDatabase, closeDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
 import { getDashboardHtml } from "./dashboard/template.ts";
 import { DeriverWorker } from "./engine/deriver.ts";
+import { legacyVectorHint, verifyLegacyVectors } from "./engine/reembed.ts";
 import { handlePeerApi } from "./peer/api.ts";
 import { resolveVaultDirForApi } from "./engine/vault.ts";
 import { assertRuleFilePath } from "./engine/rules_exporter.ts";
@@ -44,6 +45,21 @@ const engine = new MnemosyneEngine(db);
 // Background deriver: learns facts from queued conversation messages (no LLM on the request path).
 const deriver = new DeriverWorker(db);
 if (CONFIG.DERIVER_ENABLED) deriver.start();
+
+// Legacy vectors of unknown model: one-line hint, plus a bounded background
+// sample-reembed check that re-tags rows provably produced by the configured model.
+{
+  const hint = legacyVectorHint(db);
+  if (hint) {
+    console.warn(hint);
+    const limit = parseInt(process.env.MNEMO_LEGACY_VERIFY_LIMIT || "20", 10);
+    if (limit > 0) {
+      verifyLegacyVectors(db, { limit })
+        .then((r) => { if (r.tagged) console.warn(`[mnemo] verified ${r.tagged} legacy vector(s) as ${r.target_model}.`); })
+        .catch(() => {});
+    }
+  }
+}
 
 // SOTA 2026: Real-Time Server-Sent Events (SSE) Client Broadcaster
 const sseClients = new Set<ReadableStreamDefaultController>();
