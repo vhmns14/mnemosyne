@@ -1,3 +1,4 @@
+import { insightCardMinTrust } from "./insight_quality.ts";
 import type { Database } from "bun:sqlite";
 import type { MemoryCategory, PurgeReceipt } from "../types.ts";
 import { rememberMemory } from "./dialectic.ts";
@@ -374,14 +375,19 @@ export function purgeFact(db: Database, id: string): PurgeReceipt | null {
 
 const CATEGORY_RANK: Record<DerivedCategory, number> = { profile: 0, preferences: 1, patterns: 2, entities: 3, cases: 4, events: 5 };
 
-/** Facts eligible for the peer card: trusted, confident, active. */
+/**
+ * Facts eligible for the peer card: trusted, confident, active. A reflect insight is a
+ * model's synthesis, not something the person said: it needs trust >= the insight
+ * threshold (MNEMO_INSIGHT_CARD_TRUST, default 0.6) or a re-observation to get in.
+ */
 export function cardFacts(db: Database, peer: string, limit = 12): FactRow[] {
   const rows = (db
     .query(
       `${FACT_SELECT} WHERE d.peer = ? AND m.is_active = 1 AND d.trust >= ? AND m.confidence >= ?
-       AND (m.valid_until IS NULL OR m.valid_until <= 0 OR m.valid_until > ?)`
+       AND (m.valid_until IS NULL OR m.valid_until <= 0 OR m.valid_until > ?)
+       AND (d.kind != 'insight' OR d.trust >= ? OR d.observations >= 2)`
     )
-    .all(peer, CARD_MIN_TRUST, CARD_MIN_CONFIDENCE, Date.now()) as any[]).map(toFact);
+    .all(peer, CARD_MIN_TRUST, CARD_MIN_CONFIDENCE, Date.now(), insightCardMinTrust()) as any[]).map(toFact);
   rows.sort(
     (a, b) => CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category] || b.trust * b.confidence - a.trust * a.confidence || b.updated_at - a.updated_at
   );

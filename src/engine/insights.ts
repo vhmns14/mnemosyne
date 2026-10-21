@@ -1,9 +1,10 @@
 import { expandQuery, expansionStrings } from "./query_expansion.ts";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { addDerivedFact, cardFacts, getFactRow, listFacts, type FactRow } from "./facts.ts";
+import { addDerivedFact, cardFacts, getFactRow, listFacts, reinforceFact, type FactRow } from "./facts.ts";
 import type { LlmClient } from "./llm.ts";
 import { peerRecall, getRepresentation } from "./representation.ts";
+import { comparable, judgeInsight, type Comparable } from "./insight_quality.ts";
 
 /**
  * Hindsight-style reflect + Honcho-style dialectic over a peer's memory.
@@ -12,6 +13,10 @@ import { peerRecall, getRepresentation } from "./representation.ts";
 export interface ReflectResult {
   peer: string;
   insights: Array<{ id: string; content: string; source_memory_ids: string[] }>;
+  /** Proposed insights the quality gate refused (near-duplicates, too few distinct sources). */
+  rejected?: Array<{ content: string; reason: string }>;
+  /** Existing insights the model re-derived from at least one new source fact (trust +, observations +1). */
+  reobserved?: string[];
   skipped_reason?: string;
 }
 
@@ -28,7 +33,8 @@ export async function reflectPeer(db: Database, peer: string, llm: LlmClient | n
     .slice(0, limit);
   if (facts.length < 3) return { peer, insights: [], skipped_reason: "need at least 3 facts" };
   const known = new Set(facts.map((f) => f.id));
-  const existingInsights = listFacts(db, peer, { kind: "insight", limit: 20 }).map((f) => f.content);
+  const existingInsightRows = listFacts(db, peer, { kind: "insight", limit: 50 });
+  const existingInsights = existingInsightRows.slice(0, 20).map((f) => f.content);
   const reply = await llm.chatJSON<{ insights?: any[] }>([
     {
       role: "system",
@@ -43,16 +49,40 @@ export async function reflectPeer(db: Database, peer: string, llm: LlmClient | n
       content: `Facts:\n${facts.map((f) => `- id=${f.id} (${f.category}): ${f.content}`).join("\n")}\n\nExisting insights:\n${existingInsights.map((i) => `- ${i}`).join("\n") || "(none)"}`,
     },
   ]);
-  const out: ReflectResult = { peer, insights: [] };
+  const out: ReflectResult = { peer, insights: [], rejected: [], reobserved: [] };
+  // Quality gate inputs (peer name ignored: it is in every fact and inflates overlap).
+  const ignore = [peer];
+  const factCmp = new Map<string, Comparable>();
+  for (const f of facts) factCmp.set(f.id, await comparable(f.content, ignore));
+  const insightCmp: Comparable[] = [];
+  const insightIds: Array<string | null> = [];
+  for (const f of existingInsightRows) {
+    insightCmp.push(await comparable(f.content, ignore));
+    insightIds.push(f.id);
+  }
   const stmt = db.prepare(`INSERT INTO reflections (id, topic, abstraction, source_memory_ids, scope, created_at) VALUES (?, ?, ?, ?, 'global', ?)`);
   for (const ins of (Array.isArray(reply?.insights) ? reply.insights : []).slice(0, 5)) {
     if (!ins || typeof ins.content !== "string" || !ins.content.trim()) continue;
     const sources = (Array.isArray(ins.source_ids) ? ins.source_ids : []).map(String).filter((id: string) => known.has(id));
     if (sources.length < 2) continue;
+    const content = ins.content.trim().slice(0, 600);
+    const mine = await comparable(content, ignore);
+    const verdict = judgeInsight(mine, Array.from(new Set<string>(sources)).map((id) => factCmp.get(id)!), Array.from(factCmp.values()), insightCmp);
+    if (!verdict.ok) {
+      // Same insight again, backed by a source fact it did not cite before: that is a
+      // re-observation of the existing insight (reinforceFact is idempotent per evidence).
+      const dupId = verdict.duplicateOf !== undefined ? insightIds[verdict.duplicateOf] : null;
+      if (dupId && reinforceFact(db, dupId, [], sources)) {
+        out.reobserved!.push(dupId);
+        continue;
+      }
+      out.rejected!.push({ content, reason: verdict.reason! });
+      continue;
+    }
     const conf = Number(ins.confidence);
     const res = await addDerivedFact(db, {
       peer,
-      content: ins.content.trim().slice(0, 600),
+      content,
       kind: "insight",
       category: "patterns",
       confidence: Number.isFinite(conf) ? Math.min(1, Math.max(0, conf)) : 0.6,
@@ -67,6 +97,8 @@ export async function reflectPeer(db: Database, peer: string, llm: LlmClient | n
         // mirror is best-effort
       }
       out.insights.push({ id: res.id, content: ins.content.trim(), source_memory_ids: sources });
+      insightCmp.push(mine); // two near-identical insights in one reply: keep the first
+      insightIds.push(null); // ...and the second is not a re-observation of it
     }
   }
   db.prepare(`UPDATE peer_representations SET facts_since_reflect = 0 WHERE peer = ?`).run(peer);
