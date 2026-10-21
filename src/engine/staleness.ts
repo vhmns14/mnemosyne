@@ -3,6 +3,7 @@ import type { GitAnchorRecord, StalenessReport, StalenessStatus } from "../types
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve, relative } from "node:path";
+import { safeGit } from "./safe_paths.ts";
 
 function computeFileHash(filePath: string): string | undefined {
   try {
@@ -16,16 +17,10 @@ function computeFileHash(filePath: string): string | undefined {
 }
 
 function getGitCommitHash(filePath: string, repoPath: string): string {
-  try {
-    const proc = Bun.spawnSync(["git", "log", "-n", "1", "--format=%H", "--", filePath], {
-      cwd: repoPath,
-      stderr: "pipe",
-    });
-    const hash = proc.stdout.toString().trim();
-    if (hash && hash.length === 40) return hash;
-  } catch {
-    // Fallback if git is not available
-  }
+  // Hardened: no shell, hostile repo config neutralised, timeout (see safe_paths.ts).
+  const res = safeGit(["log", "-n", "1", "--format=%H", "--no-ext-diff", "--no-show-signature", "--", filePath], repoPath);
+  const hash = res.exitCode === 0 ? res.stdout.trim() : "";
+  if (/^[0-9a-f]{40}$/.test(hash)) return hash;
   return "uncommitted-local";
 }
 

@@ -10,6 +10,12 @@ import { DeriverWorker } from "./engine/deriver.ts";
 import { handlePeerApi } from "./peer/api.ts";
 import { resolveVaultDirForApi } from "./engine/vault.ts";
 import { assertRuleFilePath } from "./engine/rules_exporter.ts";
+import { resolveAnchorForApi, resolveGitDirForApi, resolveWorkspaceDirForApi, PathConfinementError } from "./engine/safe_paths.ts";
+import { detectWorkspace } from "./engine/workspace.ts";
+import { findGitRoot } from "./engine/hook.ts";
+
+const gitRootOf = (d: string): string | null => { const ws = detectWorkspace(d); return ws.is_git ? ws.root_path : findGitRoot(d); };
+const errStatus = (err: any): number => (err instanceof PathConfinementError ? 403 : 500);
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
 
 // Request body shapes for POST routes. JSON bodies are untrusted input; these
@@ -655,13 +661,16 @@ try {
     if (method === "POST" && url.pathname === "/v1/rules/sync") {
       try {
         const body = (await req.json()) as any;
-        const targetPath = assertRuleFilePath(body.targetPath || "AGENTS.md");
+        // Name allow-list, then directory confinement on the realpath (a symlinked
+        // AGENTS.md inside a root must not redirect the write outside it), then the
+        // name check again on what the path really is.
+        const targetPath = assertRuleFilePath(resolveWorkspaceDirForApi(assertRuleFilePath(body.targetPath || "AGENTS.md"), "targetPath"));
         const format = body.format;
         const scope = body.scope || "all";
         const result = engine.syncRules(targetPath, format, scope);
         return Response.json({ success: true, ...result }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+        return Response.json({ success: false, error: err.message }, { status: errStatus(err), headers: corsHeaders });
       }
     }
 
@@ -669,10 +678,11 @@ try {
     if (method === "POST" && url.pathname === "/v1/memory/capture/git") {
       try {
         const body = (await req.json().catch(() => ({}))) as any;
-        const result = await engine.captureGit({ cwd: body.cwd, scope: body.scope });
+        const cwd = resolveGitDirForApi(body.cwd, gitRootOf, "cwd");
+        const result = await engine.captureGit({ cwd, scope: body.scope });
         return Response.json({ success: true, result }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+        return Response.json({ success: false, error: err.message }, { status: errStatus(err), headers: corsHeaders });
       }
     }
 
@@ -873,10 +883,11 @@ try {
             { status: 400, headers: corsHeaders }
           );
         }
-        const anchor = engine.anchorMemory(body.memory_id, body.file_path, body.repo_path, body.symbol_name);
+        const safe = resolveAnchorForApi(body.repo_path, body.file_path);
+        const anchor = engine.anchorMemory(body.memory_id, safe.filePath, safe.repoPath, body.symbol_name);
         return Response.json({ success: true, anchor }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+        return Response.json({ success: false, error: err.message }, { status: errStatus(err), headers: corsHeaders });
       }
     }
 
@@ -967,20 +978,20 @@ try {
     if (method === "POST" && url.pathname === "/v1/hooks/install") {
       try {
         const body = (await req.json().catch(() => ({}))) as any;
-        const res = engine.installGitHook(body?.target_dir);
+        const res = engine.installGitHook(resolveGitDirForApi(body?.target_dir, gitRootOf, "target_dir"));
         return Response.json({ success: res.success, result: res }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+        return Response.json({ success: false, error: err.message }, { status: errStatus(err), headers: corsHeaders });
       }
     }
 
     if (method === "POST" && url.pathname === "/v1/hooks/uninstall") {
       try {
         const body = (await req.json().catch(() => ({}))) as any;
-        const res = engine.uninstallGitHook(body?.target_dir);
+        const res = engine.uninstallGitHook(resolveGitDirForApi(body?.target_dir, gitRootOf, "target_dir"));
         return Response.json({ success: res.success, result: res }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+        return Response.json({ success: false, error: err.message }, { status: errStatus(err), headers: corsHeaders });
       }
     }
 

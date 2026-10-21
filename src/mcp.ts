@@ -2,6 +2,21 @@
 import { VERSION } from "./config.ts";
 import { resolveVaultDirForApi } from "./engine/vault.ts";
 import { assertRuleFilePath } from "./engine/rules_exporter.ts";
+import { resolveAnchorForApi, resolveGitDirForApi, resolveWorkspaceDirForApi, realpathLoose, PathConfinementError } from "./engine/safe_paths.ts";
+import { detectWorkspace } from "./engine/workspace.ts";
+import { findGitRoot } from "./engine/hook.ts";
+import { getDefaultBackupDir } from "./engine/backup.ts";
+
+const gitRootOf = (d: string): string | null => { const ws = detectWorkspace(d); return ws.is_git ? ws.root_path : findGitRoot(d); };
+/** Backup dir from an agent: the default backup dir (or below it) or a workspace root. */
+function resolveBackupDirForMcp(requested: unknown): string | undefined {
+  if (requested === undefined || requested === null || requested === "") return undefined;
+  if (typeof requested !== "string" || requested.includes("\0")) throw new PathConfinementError("Invalid target_dir");
+  const def = realpathLoose(getDefaultBackupDir());
+  const t = realpathLoose(requested);
+  if (t === def || t.startsWith(def + "/")) return t;
+  return resolveWorkspaceDirForApi(requested, "target_dir");
+}
 import { getDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
 import { PEER_MCP_TOOLS, callPeerTool } from "./peer/mcp_tools.ts";
@@ -891,7 +906,7 @@ async function handleMessage(line: string) {
       }
 
       if (name === "sync_rules") {
-        const syncRes = engine.syncRules(assertRuleFilePath(args.target || "AGENTS.md"), args.format, args.scope);
+        const syncRes = engine.syncRules(assertRuleFilePath(resolveWorkspaceDirForApi(assertRuleFilePath(args.target || "AGENTS.md"), "target")), args.format, args.scope);
         sendJson({
           jsonrpc: "2.0",
           id,
@@ -921,7 +936,7 @@ async function handleMessage(line: string) {
       }
 
       if (name === "capture_git") {
-        const res = await engine.captureGit({ cwd: args.cwd, scope: args.scope });
+        const res = await engine.captureGit({ cwd: resolveGitDirForApi(args.cwd, gitRootOf, "cwd"), scope: args.scope });
         sendJson({
           jsonrpc: "2.0",
           id,
@@ -947,7 +962,7 @@ async function handleMessage(line: string) {
       }
 
       if (name === "create_backup") {
-        const res = engine.backup(args.target_dir);
+        const res = engine.backup(resolveBackupDirForMcp(args.target_dir));
         sendJson({
           jsonrpc: "2.0",
           id,
@@ -957,7 +972,7 @@ async function handleMessage(line: string) {
       }
 
       if (name === "list_backups") {
-        const res = engine.listBackups(args.target_dir);
+        const res = engine.listBackups(resolveBackupDirForMcp(args.target_dir));
         sendJson({
           jsonrpc: "2.0",
           id,
@@ -1055,7 +1070,7 @@ async function handleMessage(line: string) {
       }
 
       if (name === "install_git_hook") {
-        const res = engine.installGitHook(args.target_dir);
+        const res = engine.installGitHook(resolveGitDirForApi(args.target_dir, gitRootOf, "target_dir"));
         sendJson({
           jsonrpc: "2.0",
           id,
@@ -1224,7 +1239,8 @@ async function handleMessage(line: string) {
       }
 
       if (name === "anchor_code_memory") {
-        const res = engine.anchorMemory(args.memory_id, args.file_path, args.repo_path, args.symbol_name);
+        const safe = resolveAnchorForApi(args.repo_path, args.file_path);
+        const res = engine.anchorMemory(args.memory_id, safe.filePath, safe.repoPath, args.symbol_name);
         sendJson({
           jsonrpc: "2.0",
           id,

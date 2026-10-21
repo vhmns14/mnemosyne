@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { rememberMemory } from "./dialectic.ts";
 import { addRemediation } from "./remediation.ts";
 import { detectWorkspace } from "./workspace.ts";
+import { safeGit } from "./safe_paths.ts";
 import type { MemoryCategory, MemoryImportance, MemoryOutcome } from "../types.ts";
 
 export interface GitCaptureResult {
@@ -35,10 +36,7 @@ export async function captureFromGit(
   }
 
   try {
-    const proc = Bun.spawnSync(
-      ["git", "log", "-1", "--pretty=format:%H%x1f%an%x1f%s%x1f%b"],
-      { cwd: ws.root_path }
-    );
+    const proc = safeGit(["log", "-1", "--no-show-signature", "--pretty=format:%H%x1f%an%x1f%s%x1f%b"], ws.root_path);
 
     if (proc.exitCode !== 0) {
       return {
@@ -47,7 +45,7 @@ export async function captureFromGit(
       };
     }
 
-    const output = proc.stdout.toString().trim();
+    const output = proc.stdout.trim();
     if (!output) {
       return { captured: false, message: "Empty git log output." };
     }

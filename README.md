@@ -300,6 +300,8 @@ mnemo serve            # or: bun run src/server.ts
 ```
 Visit **`http://localhost:8788/dashboard`** or **`http://localhost:8788/`** in your browser to inspect the interactive 2D Canvas Knowledge Graph, monitor active negative constraints, execute 1-click Context Doctor repairs, and view 24-hour activity digests!
 
+**Workspace confinement.** Paths that arrive from a REST body or an MCP tool call (`repo_path`/`file_path` for anchoring, `cwd` for git capture, `target_dir` for git hooks and MCP backups, the rule-file `targetPath`) must resolve (realpath, symlinks followed) inside a workspace root. Roots come from `MNEMO_WORKSPACE_ROOTS` (alias `MNEMO_ANCHOR_ROOTS`), a `:`-separated list; the default is the daemon's (or MCP process's) working directory. `/` is never accepted as a root. Anything outside is refused with 403. The CLI keeps free paths. Every `git` call runs without a shell, with a timeout, with `GIT_CONFIG_NOSYSTEM=1`, and with the exec-capable repo config keys (`core.fsmonitor`, `core.pager`, `core.hooksPath`, `core.sshCommand`, `gpg.program`, `diff.external`, ...) overridden on the command line.
+
 ### REST API Endpoints:
 * `GET    /dashboard` $\to$ Visual single-page HTML web dashboard (zero dependencies)
 * `GET    /v1/health` $\to$ Daemon status & storage info
