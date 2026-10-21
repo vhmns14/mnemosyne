@@ -1,0 +1,3 @@
+# Synthetic redaction-test fixtures (sequential/alphabet values), not real credentials.
+2fae933ed5941e9e541fb43366ad17b725f4c4ce:test/hardening_deriver.test.ts:stripe-access-token:241
+2fae933ed5941e9e541fb43366ad17b725f4c4ce:test/hardening_deriver.test.ts:gcp-api-key:239
