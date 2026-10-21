@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import os from "node:os";
 import fs from "node:fs";
 import { CONFIG, VERSION } from "./config.ts";
@@ -74,20 +75,25 @@ const SECURITY_HEADERS: Record<string, string> = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Resource-Policy": "same-origin",
 };
-// The dashboard still uses inline handlers, so scripts need 'unsafe-inline'; everything
-// else is locked down: no framing (clickjacking on Delete), no exfiltration targets.
-const DASHBOARD_CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' https://fonts.gstatic.com",
-  "img-src 'self' data:",
-  "connect-src 'self'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-].join("; ");
+// The dashboard has no inline handlers (event delegation) and its one script carries a
+// per-response nonce, so scripts need no 'unsafe-inline': an injected <script> or
+// on*= attribute never runs. Styles keep 'unsafe-inline' (style attributes; no script
+// capability). No third-party origins (fonts are the system stack), no framing.
+function dashboardCsp(nonce: string): string {
+  return [
+    "default-src 'self'",
+    `script-src 'nonce-${nonce}'`,
+    "script-src-attr 'none'",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
 
 function withSecurityHeaders(res: Response): Response {
   try {
@@ -175,11 +181,12 @@ try {
 
     // Dashboard HTML UI (zero dependency single-page app)
     if ((method === "GET" || method === "HEAD") && (url.pathname === "/" || url.pathname === "/dashboard")) {
-      return new Response(method === "HEAD" ? null : getDashboardHtml(CONFIG.DB_PATH), {
+      const nonce = randomBytes(18).toString("base64url");
+      return new Response(method === "HEAD" ? null : getDashboardHtml(CONFIG.DB_PATH, nonce), {
         headers: {
           ...corsHeaders,
           ...SECURITY_HEADERS,
-          "Content-Security-Policy": DASHBOARD_CSP,
+          "Content-Security-Policy": dashboardCsp(nonce),
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-cache, no-store, must-revalidate",
         },

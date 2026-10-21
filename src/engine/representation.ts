@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { searchHybrid } from "./hybrid.ts";
 import { getEmbedding, cosineSimilarity, decodeVector } from "./embedder.ts";
 import { cardFacts, getFactRow, listFacts, renderTier, truncateTokens, estimateTokens, type FactRow, type Tier, type TieredItem } from "./facts.ts";
-import { fenceContext, getFenceNonce } from "./messages.ts";
+import { fenceContext, getFenceNonce, PEER_RE } from "./messages.ts";
 import { redactSecrets } from "./redact.ts";
 import type { LlmClient } from "./llm.ts";
 
@@ -178,8 +178,9 @@ export function getSessionSummary(db: Database, peer: string, session: string): 
   return db.query(`SELECT summary, message_count, updated_at FROM session_summaries WHERE peer = ? AND session = ?`).get(peer, session) as any;
 }
 
+/** Peers with facts or messages. Names the API would refuse (written by hand or an old version) are left out: they could not be opened anyway. */
 export function listPeers(db: Database): Array<{ peer: string; facts: number; messages: number }> {
-  return db
+  return (db
     .query(
       `SELECT peer, SUM(facts) AS facts, SUM(messages) AS messages FROM (
          SELECT d.peer AS peer, COUNT(*) AS facts, 0 AS messages FROM derived_facts d JOIN memories m ON m.id = d.memory_id WHERE m.is_active = 1 GROUP BY d.peer
@@ -187,7 +188,7 @@ export function listPeers(db: Database): Array<{ peer: string; facts: number; me
          SELECT peer, 0, COUNT(*) FROM messages GROUP BY peer
        ) GROUP BY peer ORDER BY peer`
     )
-    .all() as any;
+    .all() as Array<{ peer: string; facts: number; messages: number }>).filter((r) => PEER_RE.test(r.peer));
 }
 
 export interface ContextOptions {

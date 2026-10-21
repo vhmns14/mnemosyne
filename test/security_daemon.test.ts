@@ -163,6 +163,25 @@ describe("browser-borne attacks", () => {
     const api = await fetch(`${base}/v1/peers`, { headers: auth });
     expect(api.headers.get("x-content-type-options")).toBe("nosniff");
   });
+
+  test("dashboard CSP forbids inline scripts/handlers; the one script carries a fresh per-response nonce", async () => {
+    const a = await fetch(`${base}/dashboard`);
+    const b = await fetch(`${base}/dashboard`);
+    const csp = a.headers.get("content-security-policy") || "";
+    const scriptSrc = csp.split(";").map((d) => d.trim()).find((d) => d.startsWith("script-src ")) || "";
+    expect(scriptSrc).not.toContain("unsafe-inline");
+    expect(scriptSrc).not.toContain("unsafe-eval");
+    expect(csp).toContain("script-src-attr 'none'");
+    const nonce = /'nonce-([^']+)'/.exec(scriptSrc)?.[1];
+    expect(nonce).toBeTruthy();
+    expect(nonce).not.toBe(/'nonce-([^']+)'/.exec(b.headers.get("content-security-policy") || "")?.[1]);
+    const html = await a.text();
+    const scripts = html.match(/<script\b[^>]*>/g) || [];
+    expect(scripts).toEqual([`<script nonce="${nonce}">`]);
+    // No third-party origins at all (Google Fonts used to leak every dashboard open).
+    expect(csp).not.toMatch(/https?:/);
+    expect(html).not.toMatch(/fonts\.(googleapis|gstatic)\.com/);
+  });
 });
 
 describe("filesystem and process boundaries", () => {

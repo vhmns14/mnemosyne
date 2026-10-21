@@ -5,16 +5,19 @@ function escapeHtml(s: string): string {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): string {
+/**
+ * @param nonce per-response CSP nonce; the only script on the page carries it, so the
+ *   policy can forbid every other (inline handler, injected <script>) script.
+ */
+export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db", nonce = ""): string {
+  const nonceAttr = /^[A-Za-z0-9+/=_-]{16,}$/.test(nonce) ? ` nonce="${nonce}"` : "";
   return `<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="data:,">
   <title>🏛️ Mnemosyne Brain Dashboard</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
       /* Obsidian Slate Base Palette */
@@ -55,8 +58,8 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
       --cyan: #0ea5e9;
       --cyan-subtle: rgba(14, 165, 233, 0.1);
       
-      --font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      --mono: 'JetBrains Mono', ui-monospace, monospace;
+      --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
       --sidebar-width: 252px;
       --topbar-height: 52px;
       --statusbar-height: 28px;
@@ -112,6 +115,8 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
       display: flex;
       flex-direction: column;
       flex-shrink: 0;
+      /* Short windows: the nav scrolls instead of being clipped (items below the fold were unreachable). */
+      overflow-y: auto;
     }
 
     .sidebar-header {
@@ -138,6 +143,10 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
     }
 
     .logo-text {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
       font-size: 13px;
       font-weight: 600;
       letter-spacing: -0.01em;
@@ -495,7 +504,7 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
       background: var(--bg-subtle);
       border: 1px solid var(--border-subtle);
       border-radius: 8px;
-      overflow: hidden;
+      overflow-x: auto;
     }
 
     table {
@@ -756,6 +765,51 @@ export function getDashboardHtml(dbPath: string = "~/.mnemosyne/memory.db"): str
       line-height: 1.6;
     }
 ${PEER_STYLE}
+    .cmd-item { padding:8px 10px; border-radius:6px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; font-size:12.5px; }
+    .cmd-item:hover { background: var(--bg-surface); }
+
+    /* Topbar never wraps into its own height: labels truncate, low-value bits hide on narrower screens. */
+    .topbar { gap: 12px; }
+    .breadcrumb { min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; }
+    .breadcrumb > span { flex-shrink: 0; }
+    .breadcrumb .breadcrumb-active { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .telemetry-bar-top { flex-shrink: 0; }
+    .telemetry-pill, .cmd-trigger, .topbar-actions .btn { white-space: nowrap; }
+    .topbar-actions { flex-shrink: 0; }
+    @media (max-width: 1440px) { .breadcrumb > span:not(.breadcrumb-active) { display: none; } }
+    @media (max-width: 1200px) { .telemetry-bar-top { display: none !important; } }
+
+    /* Long unbroken content (commands, ids, payloads) must never widen a pane. */
+    .view-content > *, .view-content [style*="grid"] > *, .view-content [style*="flex"] > *, .card-surface { min-width: 0; }
+    .card-surface { overflow-wrap: anywhere; }
+
+    /* Phones / narrow windows: sidebar becomes a scrolling tab strip, panes stack. */
+    @media (max-width: 760px) {
+      body { height: auto; min-height: 100vh; overflow-x: hidden; overflow-y: auto; }
+      .app-shell { flex-direction: column; height: auto; overflow: visible; }
+      .sidebar { width: 100%; overflow: visible; border-right: none; border-bottom: 1px solid var(--border-subtle); flex-direction: row; flex-wrap: wrap; }
+      .sidebar-header { width: 100%; height: 44px; }
+      .sidebar-section { display: flex; flex-direction: row; gap: 4px; padding: 6px 8px; overflow-x: auto; width: 100%; scrollbar-width: none; }
+      .sidebar-section .section-label, .sidebar-footer, .nav-badge { display: none; }
+      .nav-item { flex: 0 0 auto; white-space: nowrap; margin: 0; }
+      .main-stage { overflow: visible; min-height: calc(100vh - 140px); }
+      .topbar { height: auto; flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+      .breadcrumb > span:not(.breadcrumb-active), .telemetry-bar-top, .topbar .kbd { display: none !important; }
+      .topbar-actions { flex-wrap: wrap; width: 100%; }
+      .topbar-actions .cmd-trigger { flex: 1 1 100%; }
+      .view-content { padding: 12px; overflow: visible; }
+      .view-content [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+      .view-content [style*="display:flex"]:not([style*="column"]), .view-content [style*="display: flex"]:not([style*="column"]) { flex-wrap: wrap; }
+      .view-content input[type="text"], .view-content textarea, .view-content select, .search-input { max-width: 100%; min-width: 0; }
+      #view-graph.active { flex-direction: column; overflow: visible; }
+      .graph-stage { min-height: 60vh; }
+      .graph-inspector { width: 100%; border-left: none; border-top: 1px solid var(--border-subtle); }
+      .statusbar { height: auto; flex-wrap: wrap; gap: 4px; padding: 6px 12px; }
+      .status-items { flex-wrap: wrap; gap: 8px; }
+      .pm-kv { grid-template-columns: 1fr; }
+      .modal-overlay > * { max-width: calc(100vw - 24px); }
+      pre, code { white-space: pre-wrap; word-break: break-word; }
+    }
   </style>
 </head>
 <body>
@@ -774,21 +828,21 @@ ${PEER_STYLE}
         </p>
         <input type="password" id="auth-token-input" class="search-input" style="width:100%; padding:8px 10px;"
                placeholder="MNEMO_AUTH_TOKEN value"
-               onkeydown="if(event.key==='Enter'){event.preventDefault(); submitAuthToken();}">
+               data-enter="submitAuthToken">
         <div id="auth-error" style="display:none; font-size:12px; color:var(--rose); margin-top:8px;"></div>
       </div>
       <div class="modal-footer">
-        <button type="button" class="btn btn-primary" onclick="submitAuthToken()">Unlock Dashboard</button>
+        <button type="button" class="btn btn-primary" data-click="submitAuthToken">Unlock Dashboard</button>
       </div>
     </div>
   </div>
 
   <!-- Command Palette Modal -->
-  <div id="cmd-palette" class="modal-overlay" onclick="if(event.target===this) toggleCmdPalette(false)">
+  <div id="cmd-palette" class="modal-overlay" data-backdrop="toggleCmdPalette" data-argn="false">
     <div class="modal-box">
       <div style="padding: 12px 14px; border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; gap: 8px;">
         <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" id="cmd-input" placeholder="Type a command or jump to view..." style="flex:1; background:transparent; border:none; color:#fff; font-size:13px; outline:none;" oninput="filterCmdList(this.value)">
+        <input type="text" id="cmd-input" placeholder="Type a command or jump to view..." style="flex:1; background:transparent; border:none; color:#fff; font-size:13px; outline:none;" data-input="filterCmdList" data-arg-from="value">
         <span class="kbd">ESC</span>
       </div>
       <div id="cmd-list" style="max-height: 280px; overflow-y: auto; padding: 6px;"></div>
@@ -796,13 +850,13 @@ ${PEER_STYLE}
   </div>
 
   <!-- Add Memory Modal -->
-  <div id="modal-add-memory" class="modal-overlay" onclick="if(event.target===this) toggleAddModal(false)">
+  <div id="modal-add-memory" class="modal-overlay" data-backdrop="toggleAddModal" data-argn="false">
     <div class="modal-box" style="width: 580px;">
       <div class="modal-header">
         <span>Store New Knowledge / Belief</span>
-        <button class="btn" style="padding: 2px 6px; border:none;" onclick="toggleAddModal(false)">✕</button>
+        <button class="btn" style="padding: 2px 6px; border:none;" data-click="toggleAddModal" data-argn="false">✕</button>
       </div>
-      <form id="add-form" onsubmit="event.preventDefault(); submitMemory();">
+      <form id="add-form" data-submit="submitMemory">
         <div class="modal-body">
           <div style="margin-bottom: 12px;">
             <label style="display:block; font-size:11px; font-weight:600; color:var(--text-dim); margin-bottom:4px;">MEMORY CONTENT</label>
@@ -846,7 +900,7 @@ ${PEER_STYLE}
           </div>
         </div>
         <div class="modal-footer">
-          <button type="button" class="btn" onclick="toggleAddModal(false)">Cancel</button>
+          <button type="button" class="btn" data-click="toggleAddModal" data-argn="false">Cancel</button>
           <button type="submit" class="btn btn-primary">Save Memory</button>
         </div>
       </form>
@@ -864,37 +918,37 @@ ${PEER_STYLE}
 
       <div class="sidebar-section">
         <div class="section-label">Core Engine</div>
-        <div class="nav-item active" onclick="switchView('graph')">
+        <div class="nav-item active" data-click="switchView" data-arg="graph">
           <svg class="icon" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><line x1="8.5" y1="8.5" x2="15.5" y2="15.5"/></svg>
           <span>Knowledge Graph</span>
           <span class="nav-badge" id="badge-triples">-</span>
         </div>
-        <div class="nav-item" onclick="switchView('drift')">
+        <div class="nav-item" data-click="switchView" data-arg="drift">
           <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
           <span>Drift Radar Sandbox</span>
         </div>
-        <div class="nav-item" onclick="switchView('compactor')">
+        <div class="nav-item" data-click="switchView" data-arg="compactor">
           <svg class="icon" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
           <span>Context Compactor</span>
         </div>
-        <div class="nav-item" onclick="switchView('remediations')">
+        <div class="nav-item" data-click="switchView" data-arg="remediations">
           <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
           <span>Error Playbooks</span>
         </div>
-        <div class="nav-item" onclick="switchView('guardrails')">
+        <div class="nav-item" data-click="switchView" data-arg="guardrails">
           <svg class="icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           <span>Guardrails & Rules</span>
           <span class="nav-badge" id="badge-guardrails">-</span>
         </div>
-        <div class="nav-item" onclick="switchView('recall')">
+        <div class="nav-item" data-click="switchView" data-arg="recall">
           <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <span>Retrieval Playground</span>
         </div>
-        <div class="nav-item" onclick="switchView('clusters')">
+        <div class="nav-item" data-click="switchView" data-arg="clusters">
           <svg class="icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           <span>Thematic Clusters</span>
         </div>
-        <div class="nav-item" onclick="switchView('explorer')">
+        <div class="nav-item" data-click="switchView" data-arg="explorer">
           <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
           <span>Belief Explorer</span>
           <span class="nav-badge" id="badge-memories">-</span>
@@ -903,29 +957,29 @@ ${PEER_STYLE}
 
       <div class="sidebar-section">
         <div class="section-label">Observability & System</div>
-        <div class="nav-item" onclick="switchView('telemetry')">
+        <div class="nav-item" data-click="switchView" data-arg="telemetry">
           <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
           <span>Resource Monitor</span>
           <span class="nav-badge" id="badge-rss">-</span>
         </div>
-        <div class="nav-item" onclick="switchView('timeline')">
+        <div class="nav-item" data-click="switchView" data-arg="timeline">
           <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           <span>Event Ledger</span>
         </div>
-        <div class="nav-item" onclick="switchView('doctor')">
+        <div class="nav-item" data-click="switchView" data-arg="doctor">
           <svg class="icon" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
           <span>Context Doctor</span>
           <span class="nav-badge" id="badge-doctor">100%</span>
         </div>
-        <div class="nav-item" onclick="switchView('persona')">
+        <div class="nav-item" data-click="switchView" data-arg="persona">
           <svg class="icon" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
           <span>Theory of Mind</span>
         </div>
-        <div class="nav-item" onclick="switchView('digest')">
+        <div class="nav-item" data-click="switchView" data-arg="digest">
           <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
           <span>24h Brain Digest</span>
         </div>
-        <div class="nav-item" onclick="switchView('packs')">
+        <div class="nav-item" data-click="switchView" data-arg="packs">
           <svg class="icon" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
           <span>Memory Packs</span>
         </div>
@@ -966,15 +1020,15 @@ ${PEER_NAV_HTML}
           </div>
         </div>
         <div class="topbar-actions">
-          <div class="cmd-trigger" onclick="toggleCmdPalette(true)">
+          <div class="cmd-trigger" data-click="toggleCmdPalette" data-argn="true">
             <span>Search or jump...</span>
             <span class="kbd">⌘K</span>
           </div>
-          <button class="btn" onclick="syncRules('agents.md')">
+          <button class="btn" data-click="syncRules" data-arg="agents.md">
             <svg class="icon" viewBox="0 0 24 24"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
             <span>Sync AGENTS.md</span>
           </button>
-          <button class="btn btn-primary" onclick="toggleAddModal(true)">
+          <button class="btn btn-primary" data-click="toggleAddModal" data-argn="true">
             <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             <span>New Belief</span>
           </button>
@@ -985,17 +1039,17 @@ ${PEER_NAV_HTML}
       <div id="view-graph" class="view-content active">
         <div class="graph-stage">
           <div class="graph-controls">
-            <button class="btn" style="padding:4px 8px;" onclick="zoomGraph(1.15)">＋</button>
-            <button class="btn" style="padding:4px 8px;" onclick="zoomGraph(0.85)">－</button>
-            <button class="btn" style="padding:4px 8px;" onclick="resetGraph()">Center</button>
-            <button class="btn" style="padding:4px 8px;" onclick="loadStats()">Reload</button>
+            <button class="btn" style="padding:4px 8px;" data-click="zoomGraph" data-argn="1.15" aria-label="Zoom in">+</button>
+            <button class="btn" style="padding:4px 8px;" data-click="zoomGraph" data-argn="0.85" aria-label="Zoom out">-</button>
+            <button class="btn" style="padding:4px 8px;" data-click="resetGraph">Center</button>
+            <button class="btn" style="padding:4px 8px;" data-click="loadStats">Reload</button>
           </div>
           <canvas id="graph-canvas"></canvas>
         </div>
         <div class="graph-inspector" id="inspector-pane">
           <div class="inspector-header">
             <span>Entity Inspector</span>
-            <button class="btn" style="padding:2px 6px; border:none;" onclick="clearSelection()">✕</button>
+            <button class="btn" style="padding:2px 6px; border:none;" data-click="clearSelection">✕</button>
           </div>
           <div class="inspector-body" id="inspector-content">
             <div style="color:var(--text-dim); text-align:center; padding: 40px 0;">
@@ -1013,8 +1067,8 @@ ${PEER_NAV_HTML}
             <div class="view-sub">Pre-pended at P0 priority during prompt assembly to enforce system safety.</div>
           </div>
           <div style="display:flex; gap:8px;">
-            <button class="btn" onclick="syncRules('cursorrules')">Sync .cursorrules</button>
-            <button class="btn" onclick="copyRules()">Copy Markdown</button>
+            <button class="btn" data-click="syncRules" data-arg="cursorrules">Sync .cursorrules</button>
+            <button class="btn" data-click="copyRules">Copy Markdown</button>
           </div>
         </div>
         <div class="table-container">
@@ -1043,8 +1097,8 @@ ${PEER_NAV_HTML}
           </div>
         </div>
         <div class="input-row">
-          <input type="text" id="recall-query" class="search-input" placeholder="Enter query (e.g. 'RAM 16GB limit', 'sqlite wal', 'build cloudflare', 'albatross') ..." onkeydown="if(event.key==='Enter') executeRecall()">
-          <button class="btn btn-primary" onclick="executeRecall()">Execute Recall</button>
+          <input type="text" id="recall-query" class="search-input" placeholder="Enter query (e.g. 'RAM 16GB limit', 'sqlite wal', 'build cloudflare', 'albatross') ..." data-enter="executeRecall">
+          <button class="btn btn-primary" data-click="executeRecall">Execute Recall</button>
         </div>
         <div id="recall-stats" style="font-family:var(--mono); font-size:11px; color:var(--text-dim); margin-bottom:12px; display:none;"></div>
         <div id="recall-cards" style="display:flex; flex-direction:column; gap:8px;"></div>
@@ -1083,7 +1137,7 @@ ${PEER_NAV_HTML}
             <div class="view-title">Context Doctor & Self-Healing</div>
             <div class="view-sub">Audits orphaned triples, stale links, and database integrity.</div>
           </div>
-          <button class="btn btn-primary" onclick="executeDoctorRepair()">Run Surgical Repair</button>
+          <button class="btn btn-primary" data-click="executeDoctorRepair">Run Surgical Repair</button>
         </div>
         <div style="display:grid; grid-template-columns: 240px 1fr; gap:16px; margin-bottom:16px;">
           <div style="background: linear-gradient(180deg, rgba(16, 185, 129, 0.05) 0%, rgba(16, 185, 129, 0.01) 100%), var(--bg-subtle); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 8px; padding: 20px; text-align: center;">
@@ -1118,7 +1172,7 @@ ${PEER_NAV_HTML}
             <div class="view-title">Brain Activity Digest</div>
             <div class="view-sub">Audit trail and memory change ledger over the last 24 hours.</div>
           </div>
-          <button class="btn" onclick="loadDigest()">Refresh</button>
+          <button class="btn" data-click="loadDigest">Refresh</button>
         </div>
         <pre id="digest-report">Generating digest...</pre>
       </div>
@@ -1131,7 +1185,7 @@ ${PEER_NAV_HTML}
             <div class="view-sub">Real-time hardware telemetry, daemon memory footprint, and SQLite storage analytics.</div>
           </div>
           <div style="display:flex; gap:8px;">
-            <button class="btn" onclick="loadTelemetry()">
+            <button class="btn" data-click="loadTelemetry">
               <svg class="icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
               <span>Refresh Now</span>
             </button>
@@ -1289,7 +1343,7 @@ ${PEER_NAV_HTML}
             <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
               <span style="font-size:12px; color:var(--text-dim);">Divergence Threshold:</span>
               <div style="display:flex; align-items:center; gap:8px;">
-                <input type="range" id="drift-threshold" min="0.10" max="0.90" step="0.05" value="0.35" style="width:120px;" oninput="document.getElementById('drift-thresh-val').innerText = this.value">
+                <input type="range" id="drift-threshold" min="0.10" max="0.90" step="0.05" value="0.35" style="width:120px;" data-mirror="drift-thresh-val">
                 <span class="tag tag-brand" id="drift-thresh-val">0.35</span>
               </div>
             </div>
@@ -1297,14 +1351,14 @@ ${PEER_NAV_HTML}
             <div style="margin-bottom:14px;">
               <div style="font-size:11px; color:var(--text-dim); margin-bottom:6px;">QUICK PRESET TESTS:</div>
               <div style="display:flex; flex-wrap:wrap; gap:6px;">
-                <button type="button" class="btn" style="font-size:11px; padding:4px 8px;" onclick="setDriftPreset('Jalankan proses berat secara paralel build opennextjs di background')">Parallel Build (RAM Risk)</button>
-                <button type="button" class="btn" style="font-size:11px; padding:4px 8px;" onclick="setDriftPreset('Commit and push file memory.db and memory.db-wal to git')">Push DB to Git</button>
-                <button type="button" class="btn" style="font-size:11px; padding:4px 8px;" onclick="setDriftPreset('Build di lokal untuk project undangan-digital')">Local Build Undangan</button>
-                <button type="button" class="btn" style="font-size:11px; padding:4px 8px;" onclick="setDriftPreset('Refactor frontend styles with vanilla CSS variables')">Safe CSS Refactor</button>
+                <button type="button" class="btn" style="font-size:11px; padding:4px 8px;" data-click="setDriftPreset" data-arg="Jalankan proses berat secara paralel build opennextjs di background">Parallel Build (RAM Risk)</button>
+                <button type="button" class="btn" style="font-size:11px; padding:4px 8px;" data-click="setDriftPreset" data-arg="Commit and push file memory.db and memory.db-wal to git">Push DB to Git</button>
+                <button type="button" class="btn" style="font-size:11px; padding:4px 8px;" data-click="setDriftPreset" data-arg="Build di lokal untuk project undangan-digital">Local Build Undangan</button>
+                <button type="button" class="btn" style="font-size:11px; padding:4px 8px;" data-click="setDriftPreset" data-arg="Refactor frontend styles with vanilla CSS variables">Safe CSS Refactor</button>
               </div>
             </div>
 
-            <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="evaluateDrift()">
+            <button class="btn btn-primary" style="width:100%; justify-content:center;" data-click="evaluateDrift">
               <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
               <span>Evaluate Compliance</span>
             </button>
@@ -1325,7 +1379,7 @@ ${PEER_NAV_HTML}
             <div class="view-sub">Knapsack budget packer: Maximizes cognitive density within token boundaries with P0 negative constraint guarantees.</div>
           </div>
           <div style="display:flex; gap:8px;">
-            <button class="btn" onclick="copyCompactedPrompt()">Copy Compacted Prompt</button>
+            <button class="btn" data-click="copyCompactedPrompt">Copy Compacted Prompt</button>
           </div>
         </div>
 
@@ -1338,16 +1392,16 @@ ${PEER_NAV_HTML}
             <div>
               <div style="font-size:11px; font-weight:600; color:var(--text-dim); margin-bottom:6px;">TOKEN BUDGET: <span id="budget-val" class="tag tag-brand">500 tokens</span></div>
               <div style="display:flex; align-items:center; gap:8px;">
-                <input type="range" id="compactor-budget" min="100" max="2000" step="50" value="500" style="width:140px;" oninput="document.getElementById('budget-val').innerText = this.value + ' tokens'">
-                <button class="btn btn-primary" onclick="runCompaction()">Pack Context</button>
+                <input type="range" id="compactor-budget" min="100" max="2000" step="50" value="500" style="width:140px;" data-mirror="budget-val" data-mirror-suffix=" tokens">
+                <button class="btn btn-primary" data-click="runCompaction">Pack Context</button>
               </div>
             </div>
           </div>
           <div style="display:flex; gap:8px; margin-top:12px;">
-            <button type="button" class="btn" style="font-size:11px; padding:3px 8px;" onclick="setCompactorBudget(200)">200 (Minimal)</button>
-            <button type="button" class="btn" style="font-size:11px; padding:3px 8px;" onclick="setCompactorBudget(500)">500 (Standard)</button>
-            <button type="button" class="btn" style="font-size:11px; padding:3px 8px;" onclick="setCompactorBudget(1000)">1000 (Expanded)</button>
-            <button type="button" class="btn" style="font-size:11px; padding:3px 8px;" onclick="setCompactorBudget(1800)">1800 (Deep)</button>
+            <button type="button" class="btn" style="font-size:11px; padding:3px 8px;" data-click="setCompactorBudget" data-argn="200">200 (Minimal)</button>
+            <button type="button" class="btn" style="font-size:11px; padding:3px 8px;" data-click="setCompactorBudget" data-argn="500">500 (Standard)</button>
+            <button type="button" class="btn" style="font-size:11px; padding:3px 8px;" data-click="setCompactorBudget" data-argn="1000">1000 (Expanded)</button>
+            <button type="button" class="btn" style="font-size:11px; padding:3px 8px;" data-click="setCompactorBudget" data-argn="1800">1800 (Deep)</button>
           </div>
         </div>
 
@@ -1393,7 +1447,7 @@ ${PEER_NAV_HTML}
             <div class="view-title">Reflexion Playbooks &amp; Self-Healing Runbooks</div>
             <div class="view-sub">Episodic failure auto-capture repository with matched root causes and reproducible terminal fix steps.</div>
           </div>
-          <button class="btn" onclick="loadRemediations()">
+          <button class="btn" data-click="loadRemediations">
             <svg class="icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             <span>Refresh Playbooks</span>
           </button>
@@ -1402,9 +1456,9 @@ ${PEER_NAV_HTML}
         <div class="card-surface" style="margin-bottom:16px;">
           <div class="prop-label" style="color:var(--brand); margin-bottom:8px;">INSTANT ERROR &amp; SYMPTOM MATCHER</div>
           <div class="input-row" style="margin-bottom:0;">
-            <input type="text" id="remedy-search-input" class="search-input" placeholder="Paste error string or symptom (e.g. '401 unauthorized client detected', 'EADDRINUSE:8788', 'out of memory') ..." onkeydown="if(event.key==='Enter') testRemediation()">
-            <button class="btn btn-primary" onclick="testRemediation()">Match Playbook</button>
-            <button class="btn" onclick="clearRemediationMatch()">Reset</button>
+            <input type="text" id="remedy-search-input" class="search-input" placeholder="Paste error string or symptom (e.g. '401 unauthorized client detected', 'EADDRINUSE:8788', 'out of memory') ..." data-enter="testRemediation">
+            <button class="btn btn-primary" data-click="testRemediation">Match Playbook</button>
+            <button class="btn" data-click="clearRemediationMatch">Reset</button>
           </div>
           <div id="remedy-match-status" style="margin-top:8px; font-size:12px; display:none;"></div>
         </div>
@@ -1423,9 +1477,9 @@ ${PEER_NAV_HTML}
           </div>
           <div style="display:flex; align-items:center; gap:12px;">
             <span style="font-size:12px; color:var(--text-dim);">Threshold:</span>
-            <input type="range" id="cluster-threshold" min="0.30" max="0.85" step="0.05" value="0.55" style="width:100px;" oninput="document.getElementById('cluster-thresh-val').innerText = this.value">
+            <input type="range" id="cluster-threshold" min="0.30" max="0.85" step="0.05" value="0.55" style="width:100px;" data-mirror="cluster-thresh-val">
             <span class="tag tag-brand" id="cluster-thresh-val">0.55</span>
-            <button class="btn btn-primary" onclick="loadClusters()">Re-cluster</button>
+            <button class="btn btn-primary" data-click="loadClusters">Re-cluster</button>
           </div>
         </div>
 
@@ -1441,7 +1495,7 @@ ${PEER_NAV_HTML}
             <div class="view-title">Memory Event Ledger &amp; Bi-Temporal Timeline</div>
             <div class="view-sub">Immutable chronological ledger tracking all memory assertions, mutations, supersessions, and purges.</div>
           </div>
-          <button class="btn" onclick="loadTimeline()">
+          <button class="btn" data-click="loadTimeline">
             <svg class="icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             <span>Refresh Ledger</span>
           </button>
@@ -1449,15 +1503,15 @@ ${PEER_NAV_HTML}
 
         <div class="card-surface" style="margin-bottom:16px;">
           <div style="display:grid; grid-template-columns: 1fr auto auto; gap:12px; align-items:center;">
-            <input type="text" id="timeline-filter-target" class="search-input" placeholder="Filter by Memory ID or query (blank for all events)..." onkeydown="if(event.key==='Enter') loadTimeline()">
-            <select id="timeline-type-filter" class="search-input" style="width:140px;" onchange="filterTimelineByType(this.value)">
+            <input type="text" id="timeline-filter-target" class="search-input" placeholder="Filter by Memory ID or query (blank for all events)..." data-enter="loadTimeline">
+            <select id="timeline-type-filter" class="search-input" style="width:140px;" data-change="filterTimelineByType" data-arg-from="value">
               <option value="ALL">All Event Types</option>
               <option value="CREATED">CREATED</option>
               <option value="MUTATED">MUTATED</option>
               <option value="SUPERSEDED">SUPERSEDED</option>
               <option value="PURGED">PURGED</option>
             </select>
-            <button class="btn btn-primary" onclick="loadTimeline()">Filter</button>
+            <button class="btn btn-primary" data-click="loadTimeline">Filter</button>
           </div>
         </div>
 
@@ -1496,7 +1550,7 @@ ${PEER_NAV_HTML}
               </select>
             </div>
 
-            <button class="btn btn-primary" style="width:100%; justify-content:center; margin-bottom:12px;" onclick="exportMemoryPack()">
+            <button class="btn btn-primary" style="width:100%; justify-content:center; margin-bottom:12px;" data-click="exportMemoryPack">
               <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               <span>Download Memory Pack (.json)</span>
             </button>
@@ -1517,8 +1571,8 @@ ${PEER_NAV_HTML}
             </div>
 
             <div style="margin-bottom:12px;">
-              <input type="file" id="pack-file-input" accept=".json,application/json" style="display:none;" onchange="handlePackFileSelect(this)">
-              <div onclick="document.getElementById('pack-file-input').click()" style="border:2px dashed var(--border-base); border-radius:6px; padding:18px; text-align:center; cursor:pointer; background:rgba(255,255,255,0.01); transition:border-color 0.2s ease;">
+              <input type="file" id="pack-file-input" accept=".json,application/json" style="display:none;" data-change="handlePackFileSelect" data-arg-from="this">
+              <div data-click="clickById" data-arg="pack-file-input" style="border:2px dashed var(--border-base); border-radius:6px; padding:18px; text-align:center; cursor:pointer; background:rgba(255,255,255,0.01); transition:border-color 0.2s ease;">
                 <svg class="icon" style="width:24px; height:24px; margin:0 auto 8px; color:var(--text-dim);" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                 <div id="file-drop-label" style="font-size:12px; color:var(--text-main); font-weight:500;">Click to select JSON memory pack file</div>
                 <div style="font-size:11px; color:var(--text-dim); margin-top:2px;">or paste JSON content below</div>
@@ -1527,7 +1581,7 @@ ${PEER_NAV_HTML}
 
             <textarea id="import-pack-json" placeholder="Paste memory pack JSON contents here if not uploading file..." style="height:70px; margin-bottom:12px; font-family:var(--mono); font-size:11px;"></textarea>
 
-            <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="importMemoryPack()">
+            <button class="btn btn-primary" style="width:100%; justify-content:center;" data-click="importMemoryPack">
               <svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
               <span>Verify &amp; Import Pack</span>
             </button>
@@ -1549,19 +1603,15 @@ ${PEER_VIEWS_HTML}
     <div class="status-items">
       <div class="status-item">
         <span class="status-dot"></span>
-        <span>DAEMON ONLINE :8788</span>
+        <span id="sb-online">DAEMON ONLINE</span>
       </div>
       <span>•</span>
       <div class="status-item">
-        <span id="sb-pid">PID 63954</span>
+        <span id="sb-pid">PID --</span>
       </div>
       <span>•</span>
       <div class="status-item">
         <span>SQLite WAL (5000ms)</span>
-      </div>
-      <span>•</span>
-      <div class="status-item">
-        <span>56/56 Tests Passing</span>
       </div>
     </div>
     <div class="status-items">
@@ -1583,7 +1633,7 @@ ${PEER_VIEWS_HTML}
     </div>
   </footer>
 
-  <script>
+  <script${nonceAttr}>
     // State
     let currentView = 'graph';
     let graphData = { nodes: [], links: [] };
@@ -1679,7 +1729,7 @@ ${PEER_VIEWS_HTML}
       const panel = document.getElementById('view-' + viewId);
       if (panel) panel.classList.add('active');
 
-      const navEl = Array.from(document.querySelectorAll('.nav-item')).find(n => n.getAttribute('onclick')?.includes(viewId));
+      const navEl = Array.from(document.querySelectorAll('.nav-item')).find(n => n.getAttribute('data-click') === 'switchView' && n.getAttribute('data-arg') === viewId);
       if (navEl) navEl.classList.add('active');
 
       if (viewId === 'graph') {
@@ -1734,17 +1784,16 @@ ${PEER_VIEWS_HTML}
       }
     }
 
+    let cmdVisible = [];
     function renderCmdList(items) {
+      cmdVisible = items;
       const c = document.getElementById('cmd-list');
       if (items.length === 0) {
         c.innerHTML = '<div style="padding:10px; color:var(--text-dim); text-align:center;">No matching commands</div>';
         return;
       }
       c.innerHTML = items.map((cmd, idx) => \`
-        <div style="padding:8px 10px; border-radius:6px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; font-size:12.5px;" 
-             onmouseover="this.style.background='var(--bg-surface)'" 
-             onmouseout="this.style.background='transparent'"
-             onclick="COMMANDS[\${idx}].action(); toggleCmdPalette(false);">
+        <div class="cmd-item" data-click="runCommand" data-argn="\${idx}">
           <span>\${escapeAttr(cmd.label)}</span>
           <span class="kbd">↵</span>
         </div>
@@ -2293,7 +2342,7 @@ ${PEER_VIEWS_HTML}
           <td><span class="tag">\${escapeAttr(r.scope)}</span></td>
           <td style="font-family:var(--mono);">\${r.access_count || 0}</td>
           <td>
-            <button class="btn btn-danger" style="padding:2px 6px; font-size:11px;" data-id="\${escapeAttr(r.id)}" onclick="forgetMemory(this.dataset.id)">Deactivate</button>
+            <button class="btn btn-danger" style="padding:2px 6px; font-size:11px;" data-id="\${escapeAttr(r.id)}" data-click="forgetMemory" data-arg-from="data:id">Deactivate</button>
           </td>
         </tr>
       \`).join('');
@@ -2374,7 +2423,7 @@ ${PEER_VIEWS_HTML}
                   <span class="tag">\${escapeAttr(m.scope)}</span>
                   \${isNeg ? '<span class="tag tag-danger">P0 GUARDRAIL</span>' : ''}
                 </div>
-                <button class="btn btn-danger" style="padding:2px 6px; font-size:10.5px;" data-id="\${escapeAttr(m.id)}" onclick="forgetMemory(this.dataset.id)">Forget</button>
+                <button class="btn btn-danger" style="padding:2px 6px; font-size:10.5px;" data-id="\${escapeAttr(m.id)}" data-click="forgetMemory" data-arg-from="data:id">Forget</button>
               </div>
               <div style="color:var(--text-main); font-size:13px; line-height:1.5;">\${escapeAttr(m.content)}</div>
             </div>
@@ -2524,6 +2573,8 @@ ${PEER_VIEWS_HTML}
         // Bottom statusbar live items
         const sbPid = document.getElementById('sb-pid');
         if (sbPid) sbPid.innerText = 'PID ' + res.process.pid;
+        const sbOnline = document.getElementById('sb-online');
+        if (sbOnline) sbOnline.textContent = 'DAEMON ONLINE ' + location.host;
         const sbRss = document.getElementById('sb-rss');
         if (sbRss) sbRss.innerText = 'RSS: ' + res.process.rss_formatted;
         const sbRam = document.getElementById('sb-ram');
@@ -2803,11 +2854,11 @@ ${PEER_VIEWS_HTML}
         const steps = Array.isArray(p.fix_steps) ? p.fix_steps : [];
         steps.forEach((step, sidx) => {
           html += '      <div style="display:flex; align-items:center; justify-content:space-between; background:#06070a; border:1px solid var(--border-subtle); border-radius:6px; padding:6px 10px; font-family:var(--mono); font-size:11.5px;">';
-          html += '        <div style="display:flex; align-items:center; gap:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">';
+          html += '        <div style="display:flex; align-items:center; gap:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1;">';
           html += '          <span style="color:var(--brand); font-weight:600;">' + (sidx + 1) + '.</span>';
           html += '          <span style="color:#fff;">' + escapeAttr(step) + '</span>';
           html += '        </div>';
-          html += '        <button class="btn" style="padding:2px 8px; font-size:11px; flex-shrink:0; margin-left:10px;" data-cmd="' + escapeAttr(step) + '" onclick="copyShellCommand(this.dataset.cmd)">Copy</button>';
+          html += '        <button class="btn" style="padding:2px 8px; font-size:11px; flex-shrink:0; margin-left:10px;" data-cmd="' + escapeAttr(step) + '" data-click="copyShellCommand" data-arg-from="data:cmd">Copy</button>';
           html += '      </div>';
         });
         html += '    </div>';
@@ -3053,6 +3104,73 @@ ${PEER_VIEWS_HTML}
     // Live auto-polling every 3.5 seconds
     setInterval(loadTelemetry, 3500);
 ${PEER_SCRIPT}
+
+    // ---------------- Event delegation (no inline handlers; CSP has no 'unsafe-inline' for scripts) ----------------
+    // Markup declares intent with data-* attributes; only allow-listed top-level functions can be invoked.
+    function runCommand(idx) {
+      const cmd = cmdVisible[Number(idx)];
+      if (cmd) cmd.action();
+      toggleCmdPalette(false);
+    }
+    function clickById(id) {
+      const el = document.getElementById(id);
+      if (el) el.click();
+    }
+    const ACTION_NAMES = new Set(["clearRemediationMatch", "clearSelection", "clickById", "copyCompactedPrompt", "copyRules", "copyShellCommand", "evaluateDrift", "executeDoctorRepair", "executeRecall", "exportMemoryPack", "filterCmdList", "filterTimelineByType", "forgetMemory", "handlePackFileSelect", "importMemoryPack", "loadClusters", "loadDigest", "loadRemediations", "loadStats", "loadTelemetry", "loadTimeline", "pmAsk", "pmDebouncedFacts", "pmLoadDeriver", "pmLoadFacts", "pmLoadProfile", "pmNewConclusion", "pmRunDeriver", "pmSetPeer", "resetGraph", "runCommand", "runCompaction", "setCompactorBudget", "setDriftPreset", "submitAuthToken", "submitMemory", "switchView", "syncRules", "testRemediation", "toggleAddModal", "toggleCmdPalette", "zoomGraph"]);
+    function actionArgs(el) {
+      if (el.hasAttribute('data-arg')) return [el.getAttribute('data-arg')];
+      if (el.hasAttribute('data-argn')) { try { return [JSON.parse(el.getAttribute('data-argn'))]; } catch (e) { return []; } }
+      const from = el.getAttribute('data-arg-from');
+      if (from === 'value') return [el.value];
+      if (from === 'this') return [el];
+      if (from && from.indexOf('data:') === 0) return [el.dataset[from.slice(5)]];
+      return [];
+    }
+    function invokeAction(name, el) {
+      if (!name || !ACTION_NAMES.has(name)) return;
+      const fn = window[name];
+      if (typeof fn === 'function') {
+        try {
+          const r = fn.apply(el, actionArgs(el));
+          if (r && typeof r.catch === 'function') r.catch(function (e) { console.warn(name, e); });
+        } catch (e) { console.warn(name, e); }
+      }
+    }
+    document.addEventListener('click', function (e) {
+      const t = e.target instanceof Element ? e.target : null;
+      if (!t) return;
+      if (t.hasAttribute('data-backdrop')) { invokeAction(t.getAttribute('data-backdrop'), t); return; }
+      const el = t.closest('[data-click]');
+      if (el) invokeAction(el.getAttribute('data-click'), el);
+    });
+    document.addEventListener('input', function (e) {
+      const el = e.target;
+      if (!(el instanceof Element)) return;
+      const mirror = el.getAttribute('data-mirror');
+      if (mirror) {
+        const out = document.getElementById(mirror);
+        if (out) out.textContent = el.value + (el.getAttribute('data-mirror-suffix') || '');
+      }
+      if (el.hasAttribute('data-input')) invokeAction(el.getAttribute('data-input'), el);
+    });
+    document.addEventListener('change', function (e) {
+      const el = e.target;
+      if (el instanceof Element && el.hasAttribute('data-change')) invokeAction(el.getAttribute('data-change'), el);
+    });
+    document.addEventListener('keydown', function (e) {
+      const el = e.target;
+      if (e.key === 'Enter' && el instanceof Element && el.hasAttribute('data-enter')) {
+        e.preventDefault();
+        invokeAction(el.getAttribute('data-enter'), el);
+      }
+    });
+    document.addEventListener('submit', function (e) {
+      const el = e.target;
+      if (el instanceof Element && el.hasAttribute('data-submit')) {
+        e.preventDefault();
+        invokeAction(el.getAttribute('data-submit'), el);
+      }
+    });
   </script>
 </body>
 </html>`;
