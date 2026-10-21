@@ -60,6 +60,7 @@ export const CONFIG = {
   DERIVER_BATCH: parseInt(process.env.MNEMO_DERIVER_BATCH || "20", 10),
   LLM_RPM: parseInt(process.env.MNEMO_LLM_RPM || "30", 10),
   LLM_TIMEOUT_MS: parseInt(process.env.MNEMO_LLM_TIMEOUT_MS || "60000", 10),
+  LLM_MAX_TOKENS: parseInt(process.env.MNEMO_LLM_MAX_TOKENS || "2048", 10),
   REFLECT_EVERY_FACTS: parseInt(process.env.MNEMO_REFLECT_EVERY || "20", 10),
 
   // REST API Daemon

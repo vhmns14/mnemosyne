@@ -19,6 +19,12 @@ export interface LlmOptions {
   maxRetries?: number;
   /** Base backoff in ms (tests shrink it). */
   backoffMs?: number;
+  /**
+   * Default completion cap sent as max_tokens. Without it OpenRouter-style
+   * gateways reserve the model's full context and reject credit-limited keys
+   * with HTTP 402 before the model runs.
+   */
+  maxTokens?: number;
 }
 
 export interface ChatMessage {
@@ -73,6 +79,7 @@ export class LlmClient {
   private minIntervalMs: number;
   private maxRetries: number;
   private backoffMs: number;
+  private maxTokens: number;
   private nextSlot = 0;
   private jsonModeSupported = true;
 
@@ -84,6 +91,7 @@ export class LlmClient {
     this.minIntervalMs = opts.rpm && opts.rpm > 0 ? Math.ceil(60000 / opts.rpm) : 0;
     this.maxRetries = opts.maxRetries ?? 2;
     this.backoffMs = opts.backoffMs ?? 500;
+    this.maxTokens = opts.maxTokens && opts.maxTokens > 0 ? Math.trunc(opts.maxTokens) : 2048;
   }
 
   /** Reads MNEMO_LLM_* at call time. Returns null when no endpoint was configured. */
@@ -96,6 +104,7 @@ export class LlmClient {
       model: process.env.MNEMO_LLM_MODEL || CONFIG.LLM_MODEL,
       timeoutMs: CONFIG.LLM_TIMEOUT_MS,
       rpm: CONFIG.LLM_RPM,
+      maxTokens: CONFIG.LLM_MAX_TOKENS,
     });
   }
 
@@ -136,7 +145,7 @@ export class LlmClient {
       messages,
       temperature: opts.temperature ?? 0.1,
     };
-    if (opts.maxTokens) body.max_tokens = opts.maxTokens;
+    body.max_tokens = opts.maxTokens && opts.maxTokens > 0 ? Math.trunc(opts.maxTokens) : this.maxTokens;
     if (useJson) body.response_format = { type: "json_object" };
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };

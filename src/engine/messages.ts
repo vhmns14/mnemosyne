@@ -201,7 +201,9 @@ export function claimBatch(db: Database, limit: number, now = Date.now()): { pee
     }
     const mark = db.prepare(`UPDATE messages SET status = 'processing', claimed_at = ? WHERE id = ? AND status = 'pending'`);
     claimed = claimed.filter((r) => mark.run(now, r.id).changes > 0);
-  })();
+    // IMMEDIATE: take the write lock before reading, so two processes (daemon +
+    // `mnemo derive`) can never claim the same rows or hit a BUSY lock upgrade.
+  }).immediate();
   return claimed.length ? { peer: head.peer, messages: claimed } : null;
 }
 
@@ -210,21 +212,52 @@ export function completeBatch(db: Database, ids: number[]): void {
   db.transaction(() => ids.forEach((id) => stmt.run(id)))();
 }
 
-/** Puts a failed batch back on the queue with capped exponential backoff (offline = just waits). */
-export function failBatch(db: Database, ids: number[], error: string, now = Date.now()): void {
-  const stmt = db.prepare(`
+/** A batch whose LLM output keeps failing to parse is parked after this many tries (it would otherwise cost money forever). */
+export const MAX_POISON_ATTEMPTS = 5;
+
+/**
+ * Puts a failed batch back on the queue with capped exponential backoff (offline = just waits).
+ * `transient` failures (endpoint down, 429/5xx, auth/config errors) retry forever;
+ * content failures (malformed model output) are parked as 'skipped' with a
+ * dead-letter note after MAX_POISON_ATTEMPTS so they stop spending tokens.
+ */
+export function failBatch(db: Database, ids: number[], error: string, now = Date.now(), opts: { transient?: boolean } = {}): { parked: number } {
+  const msg = error.slice(0, 500);
+  const retry = db.prepare(`
     UPDATE messages
     SET status = 'pending', claimed_at = NULL, attempts = attempts + 1, last_error = ?,
         next_attempt_at = ? + MIN(900000, 5000 * (1 << MIN(attempts, 8)))
     WHERE id = ?
   `);
-  db.transaction(() => ids.forEach((id) => stmt.run(error.slice(0, 500), now, id)))();
+  const park = db.prepare(`
+    UPDATE messages SET status = 'skipped', claimed_at = NULL, attempts = attempts + 1, last_error = ?
+    WHERE id = ? AND attempts + 1 >= ?
+  `);
+  let parked = 0;
+  db.transaction(() => {
+    for (const id of ids) {
+      if (!opts.transient && park.run(`dead-letter after ${MAX_POISON_ATTEMPTS} attempts: ${msg}`.slice(0, 500), id, MAX_POISON_ATTEMPTS).changes > 0) {
+        parked++;
+        continue;
+      }
+      retry.run(msg, now, id);
+    }
+  }).immediate();
+  return { parked };
+}
+
+/** Puts dead-lettered messages back on the queue (after fixing the model/config). */
+export function requeueDeadLetters(db: Database, peer?: string): number {
+  const sql = `UPDATE messages SET status = 'pending', attempts = 0, next_attempt_at = 0, last_error = NULL
+               WHERE status = 'skipped' AND last_error LIKE 'dead-letter%'${peer ? " AND peer = ?" : ""}`;
+  return (peer ? db.prepare(sql).run(peer) : db.prepare(sql).run()).changes;
 }
 
 export function queueStats(db: Database, now = Date.now()) {
   const rows = db.query(`SELECT status, COUNT(*) AS c FROM messages GROUP BY status`).all() as Array<{ status: string; c: number }>;
-  const by = { pending: 0, processing: 0, done: 0, skipped: 0 };
+  const by = { pending: 0, processing: 0, done: 0, skipped: 0, dead_letter: 0 };
   for (const r of rows) if (r.status in by) by[r.status as keyof typeof by] = r.c;
+  by.dead_letter = (db.query(`SELECT COUNT(*) AS c FROM messages WHERE status = 'skipped' AND last_error LIKE 'dead-letter%'`).get() as { c: number }).c;
   const due = (db.query(`SELECT COUNT(*) AS c FROM messages WHERE status = 'pending' AND next_attempt_at <= ?`).get(now) as { c: number }).c;
   const nextRetry = (db.query(`SELECT MIN(next_attempt_at) AS t FROM messages WHERE status = 'pending' AND next_attempt_at > ?`).get(now) as {
     t: number | null;

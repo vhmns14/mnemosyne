@@ -134,6 +134,19 @@ export interface RememberOptions {
   source_session?: string | null;
   memory_type?: "declarative" | "imperative";
   skip_note_log?: boolean;
+
+  /**
+   * Peer isolation (personal-memory facts): dedupe and triple conflict
+   * resolution only ever touch memories of this same peer, never the shared
+   * 'user' pool or another peer's facts.
+   */
+  strict_peer?: boolean;
+  /**
+   * When set, only these predicates supersede an existing (same subject,
+   * same predicate) triple with a different object; every other predicate
+   * accumulates. Polarity opposites (LIKES/DISLIKES) still resolve.
+   */
+  single_valued_predicates?: string[];
 }
 
 export interface FactInput {

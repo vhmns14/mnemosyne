@@ -18,6 +18,17 @@ export const FACT_KINDS = ["explicit", "deductive", "conclusion", "insight", "ma
 export type FactKind = (typeof FACT_KINDS)[number];
 
 export const TRUST_DEFAULT = 0.5;
+/** A deductive conclusion starts a little below what the person said outright. */
+export const TRUST_DEDUCTIVE = 0.45;
+/** Only assistant/tool messages back it: kept for review, below card trust. */
+export const TRUST_UNSOURCED = 0.3;
+/** Would have overridden a hand-set fact: kept alongside it, below card trust. */
+export const TRUST_CONFLICT = 0.4;
+/**
+ * Predicates where a new object replaces the old one for the same peer.
+ * Everything else (habits, goals, projects, pets...) accumulates.
+ */
+export const SINGLE_VALUED_PREDICATES = ["LIVES_IN", "WORKS_AT", "HAS_AGE", "AGE", "IS_MARRIED_TO", "MARRIED_TO"];
 export const TRUST_HELPFUL = 0.05;
 export const TRUST_UNHELPFUL = -0.1;
 export const TRUST_REOBSERVED = 0.03;
@@ -77,9 +88,13 @@ export interface FactRow {
   is_active: boolean;
   superseded_by_id: string | null;
   source_session: string | null;
+  /** Epoch ms after which a temporary fact stops being true (null = lasting). */
+  valid_until: number | null;
   created_at: number;
   updated_at: number;
 }
+
+const isExpired = (validUntil: unknown, now = Date.now()) => validUntil !== null && validUntil !== undefined && Number(validUntil) > 0 && Number(validUntil) <= now;
 
 function toFact(r: any): FactRow {
   return {
@@ -93,17 +108,18 @@ function toFact(r: any): FactRow {
     observations: Number(r.observations),
     source_message_ids: parseIds<number>(r.source_message_ids),
     source_memory_ids: parseIds<string>(r.source_memory_ids),
-    status: r.status,
-    is_active: Boolean(r.is_active),
+    status: isExpired(r.valid_until) && r.status === "active" ? "expired" : r.status,
+    is_active: Boolean(r.is_active) && !isExpired(r.valid_until),
     superseded_by_id: r.superseded_by_id ?? null,
     source_session: r.source_session ?? null,
+    valid_until: r.valid_until ?? null,
     created_at: Number(r.df_created_at ?? r.created_at),
     updated_at: Number(r.df_updated_at ?? r.updated_at),
   };
 }
 
 const FACT_SELECT = `
-  SELECT m.id, m.content, m.confidence, m.status, m.is_active, m.superseded_by_id, m.source_session,
+  SELECT m.id, m.content, m.confidence, m.status, m.is_active, m.superseded_by_id, m.source_session, m.valid_until,
          d.peer AS df_peer, d.kind, d.category AS df_category, d.trust, d.observations,
          d.source_message_ids, d.source_memory_ids, d.created_at AS df_created_at, d.updated_at AS df_updated_at
   FROM derived_facts d JOIN memories m ON m.id = d.memory_id
@@ -126,6 +142,8 @@ export interface NewFact {
   session?: string | null;
   entities?: Array<{ subject: string; predicate: string; object: string }>;
   actor?: string;
+  /** Epoch ms after which the fact stops being true (temporary facts). */
+  valid_until?: number | null;
 }
 
 export interface FactWriteResult {
@@ -178,9 +196,17 @@ export async function addDerivedFact(db: Database, fact: NewFact): Promise<FactW
     // Derived facts describe a person; never auto-flag them as agent guardrails.
     is_negative_constraint: false,
     memory_type: "declarative",
+    // Never dedupe into, or supersede, another peer's (or the shared pool's) memories.
+    strict_peer: true,
+    single_valued_predicates: SINGLE_VALUED_PREDICATES,
+    valid_until: fact.valid_until ?? null,
   });
 
-  const existing = db.query(`SELECT memory_id FROM derived_facts WHERE memory_id = ?`).get(id);
+  const existing = db.query(`SELECT memory_id, peer FROM derived_facts WHERE memory_id = ?`).get(id) as { memory_id: string; peer: string } | null;
+  if (existing && existing.peer !== fact.peer) {
+    // Defense in depth: strict_peer should make this unreachable.
+    throw new Error(`dedupe crossed peers (${fact.peer} -> ${existing.peer})`);
+  }
   if (existing) {
     reinforceFact(db, id, fact.source_message_ids ?? [], fact.source_memory_ids ?? []);
     return { id, action: "reinforced" };
@@ -201,6 +227,22 @@ export async function addDerivedFact(db: Database, fact: NewFact): Promise<FactW
     now
   );
   return { id, action: "added" };
+}
+
+/** Retires temporary derived facts whose valid_until has passed (history is kept). */
+export function expireFacts(db: Database, now = Date.now()): number {
+  const rows = db
+    .query(
+      `SELECT m.id FROM memories m JOIN derived_facts d ON d.memory_id = m.id
+       WHERE m.is_active = 1 AND m.valid_until IS NOT NULL AND m.valid_until > 0 AND m.valid_until <= ?`
+    )
+    .all(now) as Array<{ id: string }>;
+  for (const r of rows) {
+    db.prepare(`UPDATE memories SET is_active = 0, status = 'expired', updated_at = ? WHERE id = ? AND is_active = 1`).run(now, r.id);
+    db.prepare(`UPDATE entity_triples SET is_active = 0, valid_until = ? WHERE memory_id = ? AND is_active = 1`).run(now, r.id);
+    recordMemoryEvent(db, r.id, "MUTATED", "Expired: temporary fact reached its valid_until", "deriver");
+  }
+  return rows.length;
 }
 
 /** Marks `oldId` superseded by `newId` (history is kept; nothing is deleted). */
@@ -237,7 +279,10 @@ export function listFacts(
 ): FactRow[] {
   const where = ["d.peer = ?"];
   const params: any[] = [peer];
-  if (!opts.include_inactive) where.push("m.is_active = 1");
+  if (!opts.include_inactive) {
+    where.push("m.is_active = 1 AND (m.valid_until IS NULL OR m.valid_until <= 0 OR m.valid_until > ?)");
+    params.push(Date.now());
+  }
   if (opts.category && (DERIVED_CATEGORIES as readonly string[]).includes(opts.category)) {
     where.push("d.category = ?");
     params.push(opts.category);
@@ -325,8 +370,11 @@ const CATEGORY_RANK: Record<DerivedCategory, number> = { profile: 0, preferences
 /** Facts eligible for the peer card: trusted, confident, active. */
 export function cardFacts(db: Database, peer: string, limit = 12): FactRow[] {
   const rows = (db
-    .query(`${FACT_SELECT} WHERE d.peer = ? AND m.is_active = 1 AND d.trust >= ? AND m.confidence >= ?`)
-    .all(peer, CARD_MIN_TRUST, CARD_MIN_CONFIDENCE) as any[]).map(toFact);
+    .query(
+      `${FACT_SELECT} WHERE d.peer = ? AND m.is_active = 1 AND d.trust >= ? AND m.confidence >= ?
+       AND (m.valid_until IS NULL OR m.valid_until <= 0 OR m.valid_until > ?)`
+    )
+    .all(peer, CARD_MIN_TRUST, CARD_MIN_CONFIDENCE, Date.now()) as any[]).map(toFact);
   rows.sort(
     (a, b) => CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category] || b.trust * b.confidence - a.trust * a.confidence || b.updated_at - a.updated_at
   );

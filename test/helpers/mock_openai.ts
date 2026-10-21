@@ -26,12 +26,17 @@ export function intentOf(system: string): Intent {
   return "unknown";
 }
 
-/** "[#12] (s1) alice: text" -> [{id:12, text}] */
-export function parseTranscript(user: string): Array<{ id: number; text: string }> {
-  const out: Array<{ id: number; text: string }> = [];
+/** JSON-lines transcript ({"id":12,"session":"s1","speaker":"alice","role":"user","text":"..."}) -> [{id, text, role}] */
+export function parseTranscript(user: string): Array<{ id: number; text: string; role: string }> {
+  const out: Array<{ id: number; text: string; role: string }> = [];
   for (const line of user.split("\n")) {
-    const m = line.match(/^\[#(\d+)\] \([^)]*\) [^:]+: (.*)$/);
-    if (m) out.push({ id: Number(m[1]), text: m[2] });
+    if (!line.startsWith("{")) continue;
+    try {
+      const m = JSON.parse(line);
+      if (typeof m?.id === "number" && typeof m?.text === "string") out.push({ id: m.id, text: m.text, role: String(m.role) });
+    } catch {
+      // not a transcript line
+    }
   }
   return out;
 }

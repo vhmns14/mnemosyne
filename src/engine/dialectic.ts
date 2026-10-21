@@ -208,10 +208,11 @@ export async function rememberMemory(
   const validUntil = options.valid_until !== undefined ? options.valid_until : null;
 
   // 1. Conflict Invalidation via explicit query (Mem0 style):
-  if (options.supersedes_query) {
+  if (typeof options.supersedes_query === "string" && options.supersedes_query.trim()) {
     const candidates = db
-      .query(`SELECT id FROM memories WHERE is_active = 1 AND content LIKE ?`)
-      .all(`%${options.supersedes_query}%`) as any[];
+      .query(`SELECT id FROM memories WHERE is_active = 1 AND content LIKE ? ESCAPE '\\'`)
+      // Escape LIKE wildcards: a bare "_" or "%" must not supersede every memory.
+      .all(`%${options.supersedes_query.replace(/[\\%_]/g, (c) => "\\" + c)}%`) as any[];
 
     for (const c of candidates) {
       db.prepare(
@@ -234,8 +235,8 @@ export async function rememberMemory(
   if (!options.supersedes_query) {
     const fpMatch = db.query(`
       SELECT id, access_count, confidence, tags, is_negative_constraint FROM memories 
-      WHERE is_active = 1 AND fingerprint = ? AND (peer = ? OR peer = 'user')
-    `).get(fingerprint, peer) as any;
+      WHERE is_active = 1 AND fingerprint = ? AND (peer = ? OR (peer = 'user' AND ? = 0))
+    `).get(fingerprint, peer, options.strict_peer ? 1 : 0) as any;
 
     if (fpMatch && Boolean(fpMatch.is_negative_constraint) === isNegative) {
       let existingTags: string[] = [];
@@ -280,7 +281,8 @@ try {
         WHERE m.is_active = 1 
           AND (m.scope = ? OR m.scope = 'global')
           AND m.category = ?
-      `).all(scope, category) as Array<{ id: string; content: string; access_count: number; tags: string; is_negative_constraint?: number; vector: any }>;
+          AND (? = 0 OR m.peer = ?)
+      `).all(scope, category, options.strict_peer ? 1 : 0, peer) as Array<{ id: string; content: string; access_count: number; tags: string; is_negative_constraint?: number; vector: any }>;
 
       let highestSim = 0;
       let bestMatch: { id: string; content: string; access_count: number; tags: string } | null = null;
@@ -416,9 +418,10 @@ try {
            WHERE LOWER(t.subject) = LOWER(?)
              AND t.predicate = ?
              AND LOWER(t.object) = LOWER(?)
-             AND t.is_active = 1`
+             AND t.is_active = 1
+             AND (? = 0 OR m.peer = ?)`
         )
-        .all(subject, oppositePred, object) as any[];
+        .all(subject, oppositePred, object, options.strict_peer ? 1 : 0, peer) as any[];
 
       for (const opp of opposing) {
         db.prepare(`UPDATE entity_triples SET is_active = 0, valid_until = ? WHERE id = ?`).run(now, opp.id);
@@ -440,13 +443,17 @@ try {
     }
 
     // B. Dedup by Subject + Predicate: check existing active triple
-    const isMultiValued = MULTI_VALUED_PREDICATES[predicate] === true;
+    const isMultiValued = options.single_valued_predicates
+      ? !options.single_valued_predicates.includes(predicate)
+      : MULTI_VALUED_PREDICATES[predicate] === true;
     const existing = db
       .query(
-        `SELECT id, memory_id, object FROM entity_triples
-         WHERE LOWER(subject) = LOWER(?) AND predicate = ? AND is_active = 1`
+        `SELECT t.id, t.memory_id, t.object FROM entity_triples t
+         LEFT JOIN memories m ON m.id = t.memory_id
+         WHERE LOWER(t.subject) = LOWER(?) AND t.predicate = ? AND t.is_active = 1
+           AND (? = 0 OR m.peer = ?)`
       )
-      .all(subject, predicate) as Array<{ id: string; memory_id: string | null; object: string }>;
+      .all(subject, predicate, options.strict_peer ? 1 : 0, peer) as Array<{ id: string; memory_id: string | null; object: string }>;
 
     for (const old of existing) {
       // Multi-valued predicates accumulate: "likes coffee" must not kill "likes pizza".
