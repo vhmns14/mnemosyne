@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { searchHybrid } from "./hybrid.ts";
 import { cardFacts, getFactRow, listFacts, renderTier, truncateTokens, estimateTokens, type FactRow, type Tier, type TieredItem } from "./facts.ts";
-import { fenceContext } from "./messages.ts";
+import { fenceContext, getFenceNonce } from "./messages.ts";
+import { redactSecrets } from "./redact.ts";
 import type { LlmClient } from "./llm.ts";
 
 /**
@@ -67,7 +68,7 @@ export function setPinnedCard(db: Database, peer: string, card: string[] | null)
     `INSERT INTO peer_representations (peer, summary, card, pinned_card, fact_count, source, updated_at)
      VALUES (?, '', '[]', ?, 0, 'deterministic', ?)
      ON CONFLICT(peer) DO UPDATE SET pinned_card = excluded.pinned_card, updated_at = excluded.updated_at`
-  ).run(peer, card ? JSON.stringify(card.map((c) => String(c).slice(0, 500)).slice(0, 40)) : null, now);
+  ).run(peer, card ? JSON.stringify(card.map((c) => redactSecrets(String(c)).text.slice(0, 500)).slice(0, 40)) : null, now);
   return getRepresentation(db, peer);
 }
 
@@ -189,7 +190,7 @@ export async function buildContext(db: Database, peer: string, opts: ContextOpti
     peer,
     base: { summary: rep.summary, card: rep.card, session_summary: sess?.summary ?? null },
     recall,
-    text: body ? fenceContext(body) : "",
+    text: body ? fenceContext(body, getFenceNonce(db)) : "",
     tokens: used,
   };
 }

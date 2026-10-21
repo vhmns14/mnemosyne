@@ -149,6 +149,7 @@ export async function getEmbedding(text: string): Promise<Float32Array> {
     try {
       const res = await fetch(`${CONFIG.OLLAMA_HOST.replace(/\/$/, "")}/api/embeddings`, {
         method: "POST",
+        redirect: "error",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: CONFIG.OLLAMA_MODEL,
@@ -176,6 +177,7 @@ export async function getEmbedding(text: string): Promise<Float32Array> {
     try {
       const res = await fetch(`${CONFIG.OPENAI_BASE_URL.replace(/\/$/, "")}/embeddings`, {
         method: "POST",
+        redirect: "error",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${CONFIG.OPENAI_API_KEY}`,
@@ -206,6 +208,9 @@ export async function getEmbedding(text: string): Promise<Float32Array> {
     try {
       const res = await fetch(CONFIG.ALBATROSS_URL, {
         method: "POST",
+        // Never follow redirects: a hijacked/misconfigured endpoint must not bounce the
+        // request (and its Authorization header) somewhere else.
+        redirect: "error",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${CONFIG.ALBATROSS_API_KEY}`,
@@ -238,6 +243,14 @@ export async function getEmbedding(text: string): Promise<Float32Array> {
 /** Accepts either a base URL (".../v1") or the full ".../embeddings" endpoint. */
 export function resolveEmbeddingsUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, "");
+  const proto = (() => {
+    try {
+      return new URL(trimmed).protocol;
+    } catch {
+      return "";
+    }
+  })();
+  if (proto !== "http:" && proto !== "https:") throw new Error("embed url must be http(s)");
   return /\/embeddings$/.test(trimmed) ? trimmed : `${trimmed}/embeddings`;
 }
 
@@ -253,6 +266,9 @@ export async function fetchOpenAICompatibleEmbedding(text: string): Promise<Floa
     if (CONFIG.EMBED_KEY) headers.Authorization = `Bearer ${CONFIG.EMBED_KEY}`;
     const res = await fetch(resolveEmbeddingsUrl(CONFIG.EMBED_URL), {
       method: "POST",
+      // Never follow redirects: a hijacked/misconfigured endpoint must not bounce the
+      // request (and its Authorization header) somewhere else.
+      redirect: "error",
       headers,
       body: JSON.stringify({ model: CONFIG.EMBED_MODEL, input: text }),
       signal: AbortSignal.timeout(CONFIG.EMBED_TIMEOUT_MS),

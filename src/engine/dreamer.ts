@@ -187,6 +187,9 @@ Respond ONLY with valid JSON conforming to this schema (no markdown, no backtick
 
     const res = await fetch(url, {
       method: "POST",
+      // Never follow redirects: a hijacked/misconfigured endpoint must not bounce the
+      // request (and its Authorization header) somewhere else.
+      redirect: "error",
       headers,
       body: JSON.stringify({
         model,

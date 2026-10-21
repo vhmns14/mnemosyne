@@ -102,7 +102,7 @@ describe("REST: personal memory routes", () => {
     expect(l2.json.items[0].provenance.length).toBe(1);
 
     const ctx = await call("POST", "/v1/peers/carol/context", { query: "editor theme", session: "web", tokens: 500 });
-    expect(ctx.json.text).toContain("<mnemo-memory>");
+    expect(ctx.json.text).toMatch(/^<mnemo-memory data-fence="[0-9a-f]{18}">/);
     expect(ctx.json.base.session_summary).toContain("Carol");
   });
 

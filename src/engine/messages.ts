@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { redactSecrets } from "./redact.ts";
 
 /**
@@ -9,9 +9,10 @@ import { redactSecrets } from "./redact.ts";
 
 export const FENCE_OPEN = "<mnemo-memory>";
 export const FENCE_CLOSE = "</mnemo-memory>";
-const FENCE_RE = /<mnemo-memory\b[^>]*>[\s\S]*?<\/mnemo-memory>/gi;
-// Hermes' own recalled-context fence; never re-learn it either.
-const HERMES_FENCE_RE = /<memory-context\b[^>]*>[\s\S]*?<\/memory-context>/gi;
+// Hermes' own recalled-context fence (it carries a fixed system note); never re-learn it either.
+const HERMES_FENCE_RE = /<memory-context\b[^>]*>\s*\[System note: The following is recalled memory context[\s\S]*?<\/memory-context>/gi;
+// Any fence-looking tag inside fenced content is defanged so it cannot close the fence early.
+const FENCE_TAG_RE = /<(\/?)(\s*)(mnemo-memory|memory-context)/gi;
 
 export const PEER_RE = /^[A-Za-z0-9_.:@-]{1,64}$/;
 export const ROLES = ["user", "assistant", "system", "tool"] as const;
@@ -41,14 +42,44 @@ export interface MessageRow {
   source: string;
 }
 
-/** Wraps injected memory so it can be stripped from captured turns later. */
-export function fenceContext(text: string): string {
-  return `${FENCE_OPEN}\n${text}\n${FENCE_CLOSE}`;
+/**
+ * Per-database fence nonce. Only fences carrying it are stripped from captured
+ * turns, so text that merely *looks* like a fence (typed by the user, or inside a
+ * pasted page) can never hide content from learning.
+ */
+export function getFenceNonce(db: Database): string {
+  const row = db.query(`SELECT value FROM meta WHERE key = 'fence.nonce'`).get() as { value: string } | null;
+  if (row?.value) return row.value;
+  const nonce = randomBytes(9).toString("hex");
+  db.prepare(`INSERT OR IGNORE INTO meta (key, value, updated_at) VALUES ('fence.nonce', ?, ?)`).run(nonce, Date.now());
+  return (db.query(`SELECT value FROM meta WHERE key = 'fence.nonce'`).get() as { value: string }).value;
 }
 
-/** Removes previously injected memory so recalled context is never re-learned. */
-export function stripFences(text: string): string {
-  return text.replace(FENCE_RE, "").replace(HERMES_FENCE_RE, "").trim();
+/** Neutralizes fence tags inside content (e.g. a fact that says "</mnemo-memory>"). */
+export function defangFences(text: string): string {
+  return text.replace(FENCE_TAG_RE, "‹$1$2$3");
+}
+
+/** Wraps injected memory so it can be stripped from captured turns later. */
+export function fenceContext(text: string, nonce?: string): string {
+  const open = nonce ? `<mnemo-memory data-fence="${nonce}">` : FENCE_OPEN;
+  return `${open}\n${defangFences(text)}\n${FENCE_CLOSE}`;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Removes previously injected memory so recalled context is never re-learned.
+ * With a nonce only genuine fences are removed; without one (legacy callers)
+ * only Hermes' own system-noted block is removed and mnemo fences are kept.
+ */
+export function stripFences(text: string, nonce?: string): string {
+  let out = text;
+  if (nonce) {
+    const re = new RegExp(`<mnemo-memory\\s+data-fence="${escapeRe(nonce)}"\\s*>[\\s\\S]*?<\\/mnemo-memory>`, "gi");
+    out = out.replace(re, "");
+  }
+  return out.replace(HERMES_FENCE_RE, "").trim();
 }
 
 const TRIVIAL_RE =
@@ -59,6 +90,15 @@ export function isTrivialMessage(text: string): boolean {
   const t = text.trim();
   if (t.length < 3) return true;
   return TRIVIAL_RE.test(t);
+}
+
+/** Truncates without splitting a surrogate pair (no lone halves stored). */
+export function truncateChars(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let cut = text.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return cut;
 }
 
 function sha(parts: string[]): string {
@@ -92,14 +132,16 @@ export function ingestMessages(db: Database, inputs: MessageInput[], opts: { ski
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const seen = db.prepare(`SELECT 1 FROM messages WHERE content_digest = ? LIMIT 1`);
+  const nonce = getFenceNonce(db);
 
   const tx = db.transaction(() => {
     for (const input of inputs) {
       const peer = validatePeer(input.peer);
-      const session = typeof input.session === "string" && input.session.trim() ? input.session.trim().slice(0, 128) : "default";
+      const session =
+        typeof input.session === "string" && input.session.trim() ? input.session.trim().replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 128) || "default" : "default";
       const role = (ROLES as readonly string[]).includes(String(input.role)) ? String(input.role) : "user";
       if (typeof input.content !== "string") throw new Error("content must be a string");
-      const content = redactSecrets(stripFences(input.content)).text.slice(0, 20000);
+      const content = truncateChars(redactSecrets(stripFences(input.content, nonce)).text, 20000);
       const ts = Number.isFinite(input.ts) ? Math.trunc(Number(input.ts)) : now;
       if (!content) {
         result.skipped++;
@@ -113,7 +155,8 @@ export function ingestMessages(db: Database, inputs: MessageInput[], opts: { ski
       const digest = sha([contentDigest, String(ts)]);
       // Trivial turns are kept as evidence but never sent to the LLM.
       const status = isTrivialMessage(content) || role === "tool" || role === "system" ? "skipped" : "pending";
-      const res = insert.run(peer, session, role, content, ts, now, status, digest, contentDigest, input.source || "api");
+      const source = typeof input.source === "string" && /^[a-z0-9_.:-]{1,32}$/i.test(input.source) ? input.source : "api";
+      const res = insert.run(peer, session, role, content, ts, now, status, digest, contentDigest, source);
       if (res.changes === 0) {
         result.duplicates++;
         continue;
@@ -141,7 +184,8 @@ export function checkpointTranscript(
   const rows = messages
     .filter((m) => typeof m?.content === "string" && (m.role === "user" || m.role === "assistant"))
     .map((m) => ({ role: String(m.role), content: String(m.content) }));
-  const digest = sha([peer, session, ...rows.map((r) => `${r.role}:${stripFences(r.content)}`)]);
+  const nonce = getFenceNonce(db);
+  const digest = sha([peer, session, ...rows.map((r) => `${r.role}:${stripFences(r.content, nonce)}`)]);
   const existing = db.query(`SELECT queued, message_count FROM peer_checkpoints WHERE digest = ?`).get(digest) as
     | { queued: number; message_count: number }
     | null;

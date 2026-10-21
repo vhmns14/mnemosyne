@@ -15,7 +15,10 @@ import {
 } from "../engine/facts.ts";
 import { askPeer, reflectPeer } from "../engine/insights.ts";
 import { LlmClient } from "../engine/llm.ts";
-import { checkpointTranscript, ingestMessages, PEER_RE, type MessageInput } from "../engine/messages.ts";
+import { checkpointTranscript, ingestMessages, PEER_RE, requeueDeadLetters, type MessageInput } from "../engine/messages.ts";
+
+/** Hand-written facts/conclusions are short statements, not documents. */
+const MAX_FACT_CHARS = 2000;
 import { buildContext, getRepresentation, listPeers, peerRecall, refreshRepresentation, setPinnedCard } from "../engine/representation.ts";
 
 /**
@@ -67,6 +70,13 @@ export async function handlePeerApi(req: Request, url: URL, ctx: PeerApiContext,
   if (path === "/v1/deriver/status" && method === "GET") {
     return ok({ status: ctx.worker.status() });
   }
+  if (path === "/v1/deriver/requeue" && method === "POST") {
+    const b = await body(req);
+    const peer = typeof b.peer === "string" && PEER_RE.test(b.peer) ? b.peer : undefined;
+    const requeued = requeueDeadLetters(ctx.db, peer);
+    if (requeued > 0) ctx.worker.kick();
+    return ok({ requeued });
+  }
   if (path === "/v1/deriver/run" && method === "POST") {
     const r = await ctx.worker.tick();
     return ok({ result: r, status: ctx.worker.status() });
@@ -94,12 +104,14 @@ export async function handlePeerApi(req: Request, url: URL, ctx: PeerApiContext,
   if (rest === "/card" && (method === "POST" || method === "PUT")) {
     const b = await body(req);
     if (b.card !== null && !Array.isArray(b.card)) return bad("'card' must be an array of strings or null");
+    if (Array.isArray(b.card) && b.card.some((c: unknown) => typeof c !== "string")) return bad("'card' must be an array of strings or null");
     return ok({ representation: setPinnedCard(ctx.db, peer, b.card === null ? null : b.card.map(String)) });
   }
 
   if (rest === "/ask" && method === "POST") {
     const b = await body(req);
     if (typeof b.question !== "string" || !b.question.trim()) return bad("'question' is required");
+    if (b.question.length > 4000) return bad("'question' is limited to 4000 characters", 413);
     try {
       return ok(await askPeer(ctx.db, llm(), peer, b.question, { depth: Number(b.depth) || 1 }));
     } catch (err) {
@@ -142,6 +154,7 @@ export async function handlePeerApi(req: Request, url: URL, ctx: PeerApiContext,
   if (rest === "/conclusions" && method === "POST") {
     const b = await body(req);
     if (typeof b.content !== "string" || !b.content.trim()) return bad("'content' is required");
+    if (b.content.length > MAX_FACT_CHARS) return bad(`'content' is limited to ${MAX_FACT_CHARS} characters`, 413);
     const res = await concludeFact(ctx.db, peer, b.content, b.category ? normalizeCategory(b.category) : undefined);
     return ok({ ...res, fact: getFactRow(ctx.db, res.id) });
   }
@@ -182,6 +195,7 @@ export async function handlePeerApi(req: Request, url: URL, ctx: PeerApiContext,
     if (method === "PATCH") {
       const b = await body(req);
       if (typeof b.content !== "string" || !b.content.trim()) return bad("'content' is required");
+      if (b.content.length > MAX_FACT_CHARS) return bad(`'content' is limited to ${MAX_FACT_CHARS} characters`, 413);
       const updated = await correctFact(ctx.db, id, b.content, b.category ? normalizeCategory(b.category) : undefined);
       if (!updated) return bad("fact is not active", 409);
       return ok({ fact: updated, replaced: updated.id !== id ? id : null });

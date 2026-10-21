@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 import { VERSION } from "./config.ts";
+import { resolveVaultDirForApi } from "./engine/vault.ts";
+import { assertRuleFilePath } from "./engine/rules_exporter.ts";
 import { getDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
 import { PEER_MCP_TOOLS, callPeerTool } from "./peer/mcp_tools.ts";
@@ -889,7 +891,7 @@ async function handleMessage(line: string) {
       }
 
       if (name === "sync_rules") {
-        const syncRes = engine.syncRules(args.target || "AGENTS.md", args.format, args.scope);
+        const syncRes = engine.syncRules(assertRuleFilePath(args.target || "AGENTS.md"), args.format, args.scope);
         sendJson({
           jsonrpc: "2.0",
           id,
@@ -1112,7 +1114,7 @@ async function handleMessage(line: string) {
       }
 
       if (name === "export_vault") {
-        const res = engine.exportVault(args.target_dir);
+        const res = engine.exportVault(resolveVaultDirForApi(args.target_dir));
         sendJson({
           jsonrpc: "2.0",
           id,
@@ -1122,7 +1124,7 @@ async function handleMessage(line: string) {
       }
 
       if (name === "sync_vault") {
-        const res = await engine.syncVault(args.target_dir);
+        const res = await engine.syncVault(resolveVaultDirForApi(args.target_dir));
         sendJson({
           jsonrpc: "2.0",
           id,

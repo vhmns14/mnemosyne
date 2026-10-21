@@ -31,6 +31,35 @@ export function resolveVaultDir(customDir?: string): string {
 }
 
 /**
+ * Vault directory for a REST caller: only the default vault (or a directory under
+ * MNEMO_VAULT_ROOT) — a request body must never pick an arbitrary filesystem path
+ * to write memories into or to import .md files from. The CLI keeps free paths.
+ */
+export function resolveVaultDirForApi(requested?: unknown): string {
+  const roots = [resolveVaultDir(), ...(process.env.MNEMO_VAULT_ROOT ? [path.resolve(process.env.MNEMO_VAULT_ROOT)] : [])];
+  if (requested === undefined || requested === null || requested === "") return roots[0];
+  if (typeof requested !== "string" || requested.includes("\0")) throw new Error("Invalid vault directory");
+  const real = (p: string): string => {
+    // Resolve symlinks on the longest existing prefix so a link cannot escape the root.
+    let cur = path.resolve(p);
+    const rest: string[] = [];
+    while (!fs.existsSync(cur)) {
+      rest.unshift(path.basename(cur));
+      const parent = path.dirname(cur);
+      if (parent === cur) break;
+      cur = parent;
+    }
+    return path.join(fs.realpathSync(cur), ...rest);
+  };
+  const target = real(path.isAbsolute(requested) ? requested : path.join(roots[0], requested));
+  for (const root of roots) {
+    const r = real(root);
+    if (target === r || target.startsWith(r + path.sep)) return target;
+  }
+  throw new Error("Vault directory must be inside the default vault or MNEMO_VAULT_ROOT");
+}
+
+/**
  * Creates a clean slug for a filename from memory content.
  */
 export function slugify(text: string, maxLen: number = 32): string {
@@ -255,6 +284,8 @@ function walkMarkdownFiles(dir: string): string[] {
  */
 export function exportVault(db: Database, customDir?: string): VaultExportResult {
   const vaultDir = resolveVaultDir(customDir);
+  // An empty store still gets a vault (README); it used to ENOENT here.
+  fs.mkdirSync(vaultDir, { recursive: true, mode: 0o700 });
   const rows = db.query("SELECT * FROM memories WHERE is_active = 1").all() as any[];
 
   const byCategory: Record<string, number> = {};
@@ -269,7 +300,7 @@ export function exportVault(db: Database, customDir?: string): VaultExportResult
 
     const subFolder = getCategoryFolder(r.category, Boolean(r.is_negative_constraint));
     const targetFolder = path.join(vaultDir, subFolder);
-    fs.mkdirSync(targetFolder, { recursive: true });
+    fs.mkdirSync(targetFolder, { recursive: true, mode: 0o700 });
 
     const slug = slugify(r.content, 28);
     const filename = `${slug}-${r.id.slice(0, 8)}.md`;
@@ -291,7 +322,8 @@ export function exportVault(db: Database, customDir?: string): VaultExportResult
     };
 
     const doc = serializeFrontmatter(frontmatter, r.content);
-    fs.writeFileSync(filePath, doc, "utf-8");
+    // Personal memory on disk: owner-only.
+    fs.writeFileSync(filePath, doc, { encoding: "utf-8", mode: 0o600 });
 
     try {
       const mtimeSec = Math.floor(r.updated_at / 1000);
@@ -322,7 +354,7 @@ You can read and edit these markdown files in **Obsidian**, **VS Code**, or **Cu
 
 Changes made here can be synced back into the SQLite engine via \`mnemo vault sync\`.
 `;
-    fs.writeFileSync(readmePath, readmeContent, "utf-8");
+    fs.writeFileSync(readmePath, readmeContent, { encoding: "utf-8", mode: 0o600 });
   }
 
   return {
@@ -465,7 +497,7 @@ export async function importVault(db: Database, customDir?: string): Promise<Vau
  */
 export async function syncVault(db: Database, customDir?: string): Promise<VaultSyncResult> {
   const vaultDir = resolveVaultDir(customDir);
-  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.mkdirSync(vaultDir, { recursive: true, mode: 0o700 });
 
   // 1. Import from files first
   const importRes = await importVault(db, vaultDir);

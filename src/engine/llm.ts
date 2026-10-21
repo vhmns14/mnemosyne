@@ -1,4 +1,5 @@
 import { CONFIG } from "../config.ts";
+import { redactSecrets } from "./redact.ts";
 
 /**
  * Minimal client for any OpenAI-compatible Chat Completions endpoint
@@ -39,8 +40,20 @@ export class LlmError extends Error {
   }
 }
 
+/** Only http(s) endpoints: Bun's fetch also speaks file:// and data:, which must never be an "LLM". */
+export function assertHttpUrl(raw: string): void {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new LlmError("llm url is not a valid URL", false);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new LlmError(`llm url must be http(s), got ${u.protocol}`, false);
+}
+
 export function resolveChatUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, "");
+  assertHttpUrl(trimmed);
   return /\/chat\/completions$/.test(trimmed) ? trimmed : `${trimmed}/chat/completions`;
 }
 
@@ -68,6 +81,9 @@ export function parseJsonReply(text: string): any {
     throw new LlmError("model reply was not valid JSON", true);
   }
 }
+
+let cachedClient: { sig: string; client: LlmClient } | null = null;
+let warnedSig: string | null = null;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -98,6 +114,23 @@ export class LlmClient {
   static fromEnv(): LlmClient | null {
     const explicit = process.env.MNEMO_LLM_URL;
     if (!explicit && !CONFIG.LLM_ENABLED) return null;
+    // Reuse one client per configuration so RPM pacing and the JSON-mode probe
+    // survive across deriver ticks (a fresh client per tick reset both).
+    const sig = [explicit || CONFIG.LLM_URL, process.env.MNEMO_LLM_KEY || CONFIG.LLM_API_KEY, process.env.MNEMO_LLM_MODEL || CONFIG.LLM_MODEL].join("\u0000");
+    if (cachedClient && cachedClient.sig === sig) return cachedClient.client;
+    try {
+      const client = LlmClient.build();
+      cachedClient = { sig, client };
+      return client;
+    } catch (err) {
+      if (warnedSig !== sig) console.warn(`[mnemo] LLM disabled: ${(err as Error).message}`);
+      warnedSig = sig;
+      return null;
+    }
+  }
+
+  private static build(): LlmClient {
+    const explicit = process.env.MNEMO_LLM_URL;
     return new LlmClient({
       url: explicit || CONFIG.LLM_URL,
       apiKey: process.env.MNEMO_LLM_KEY || CONFIG.LLM_API_KEY,
@@ -155,16 +188,20 @@ export class LlmClient {
     try {
       res = await fetch(this.url, {
         method: "POST",
+        // Never follow redirects: a hijacked/misconfigured endpoint must not bounce the
+        // request (and its Authorization header) somewhere else.
+        redirect: "error",
         headers,
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
-      throw new LlmError(`llm endpoint unreachable: ${(err as Error).message}`, true);
+      throw new LlmError(`llm endpoint unreachable: ${redactSecrets(String((err as Error)?.message ?? err)).text.slice(0, 200)}`, true);
     }
 
     if (!res.ok) {
-      const text = (await res.text().catch(() => "")).slice(0, 300);
+      // Error bodies end up in deriver status / dashboard: some gateways echo the key back.
+      const text = redactSecrets((await res.text().catch(() => "")).slice(0, 2000)).text.slice(0, 300);
       if (res.status === 400 && useJson && /response_format|json/i.test(text)) {
         this.jsonModeSupported = false;
         return this.once(messages, opts);

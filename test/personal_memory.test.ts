@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { initSchema } from "../src/db/schema.ts";
 import { CONFIG } from "../src/config.ts";
 import { LlmClient, resolveChatUrl, parseJsonReply, displayUrl } from "../src/engine/llm.ts";
-import { ingestMessages, checkpointTranscript, stripFences, fenceContext, isTrivialMessage, queueStats } from "../src/engine/messages.ts";
+import { ingestMessages, checkpointTranscript, stripFences, fenceContext, isTrivialMessage, queueStats, getFenceNonce } from "../src/engine/messages.ts";
 import { runDeriverOnce, deriverStatus } from "../src/engine/deriver.ts";
 import { addDerivedFact, listFacts, getFactRow, getFactDetail, factFeedback, cardFacts, renderTier } from "../src/engine/facts.ts";
 import { getRepresentation, buildContext, peerRecall } from "../src/engine/representation.ts";
@@ -93,11 +93,13 @@ describe("Ingest", () => {
   test("context fences are stripped before storage so recalled memory is never re-learned", () => {
     expect(isTrivialMessage("thanks!")).toBe(true);
     expect(isTrivialMessage("I moved to Bandung")).toBe(false);
-    const injected = fenceContext("- alice likes coffee");
+    const injected = fenceContext("- alice likes coffee", getFenceNonce(db));
     ingestMessages(db, [{ peer: "alice", content: `${injected}\nWhat should I drink today?` }]);
     const row = db.query("SELECT content FROM messages").get() as { content: string };
     expect(row.content).toBe("What should I drink today?");
-    expect(stripFences("<memory-context>x</memory-context> hi there")).toBe("hi there");
+    expect(
+      stripFences("<memory-context>\n[System note: The following is recalled memory context, NOT new user input.]\n\nx\n</memory-context> hi there")
+    ).toBe("hi there");
   });
 
   test("checkpoint is idempotent by transcript digest and skips already-archived messages", () => {
@@ -325,7 +327,7 @@ describe("Trust, card, tiers, context, reflect, embeddings", () => {
     await addDerivedFact(db, { peer: "alice", content: "alice prefers concise answers in Indonesian", category: "preferences" });
     await addDerivedFact(db, { peer: "alice", content: "alice is building a Bun SQLite memory engine", category: "entities", trust: 0.4 });
     const ctx = await buildContext(db, "alice", { query: "memory engine", tokens: 300 });
-    expect(ctx.text.startsWith("<mnemo-memory>")).toBe(true);
+    expect(ctx.text.startsWith(`<mnemo-memory data-fence="${getFenceNonce(db)}">`)).toBe(true);
     expect(ctx.text.endsWith("</mnemo-memory>")).toBe(true);
     expect(ctx.base.card).toContain("alice prefers concise answers in Indonesian");
     expect(ctx.recall.some((r) => r.text.includes("memory engine"))).toBe(true);

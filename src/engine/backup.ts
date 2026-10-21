@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readdirSync, statSync, copyFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, copyFileSync, unlinkSync, chmodSync } from "node:fs";
 import { join, resolve, basename, dirname } from "node:path";
 import { homedir } from "node:os";
 import { CONFIG } from "../config.ts";
@@ -50,7 +50,7 @@ export function createBackup(db: Database, targetDir?: string): BackupResult {
 
   const dir = targetDir ? resolve(targetDir) : getDefaultBackupDir(db.filename);
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 
   const timestamp = Date.now();
@@ -61,6 +61,8 @@ export function createBackup(db: Database, targetDir?: string): BackupResult {
     // Native SQLite atomic snapshot with escaped path literal
     const escapedPath = backupPath.replace(/'/g, "''");
     db.exec(`VACUUM INTO '${escapedPath}'`);
+    // A full copy of personal memory: owner-only, whatever the umask or target dir.
+    chmodSync(backupPath, 0o600);
 
     const stats = statSync(backupPath);
     return {

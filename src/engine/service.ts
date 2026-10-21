@@ -182,7 +182,9 @@ export function generateDreamerServiceUnit(options: {
   const workingDir = options.workingDir || resolve(import.meta.dir, "../..");
   const cliScript = options.cliScriptPath || resolve(import.meta.dir, "../cli.ts");
   const bunPath = options.bunPath || process.execPath || "bun";
-  const decayDays = options.decayDays || 30;
+  // Interpolated into ExecStart=: anything but a small integer could inject unit
+  // lines (a newline + ExecStartPre=... would run arbitrary commands).
+  const decayDays = safeDecayDays(options.decayDays);
 
   return `[Unit]
 Description=Mnemosyne Autonomous Hippocampal Sleep & Dreamer Oneshot
@@ -197,13 +199,31 @@ Environment=NODE_ENV=production
 `;
 }
 
+export function safeDecayDays(raw: unknown): number {
+  const n = Number(raw ?? 30);
+  if (!Number.isInteger(n) || n < 1 || n > 3650) {
+    if (raw === undefined || raw === null || raw === "") return 30;
+    throw new Error("decay_days must be an integer between 1 and 3650");
+  }
+  return n;
+}
+
+/** systemd OnCalendar= expressions only: no newlines or unit syntax. */
+export function safeCalendarSchedule(raw: unknown): string {
+  if (raw === undefined || raw === null || raw === "") return "*-*-* 03:00:00";
+  if (typeof raw !== "string" || raw.length > 64 || !/^[A-Za-z0-9*:,\-\/.~ ]+$/.test(raw)) {
+    throw new Error("calendar_schedule must be a systemd OnCalendar expression");
+  }
+  return raw;
+}
+
 /**
  * Generates the dreamer timer unit.
  */
 export function generateDreamerTimerUnit(options: {
   calendarSchedule?: string;
 } = {}): string {
-  const schedule = options.calendarSchedule || "*-*-* 03:00:00";
+  const schedule = safeCalendarSchedule(options.calendarSchedule);
 
   return `[Unit]
 Description=Mnemosyne Autonomous Hippocampal Sleep & Dreamer Timer

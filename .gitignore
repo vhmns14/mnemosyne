@@ -46,3 +46,6 @@ Thumbs.db
 # Python
 __pycache__/
 *.pyc
+
+# Markdown vault exports (personal memory)
+.mnemo/

@@ -149,6 +149,18 @@ export function formatRules(
  * Synchronizes Mnemosyne rules to an external file (e.g. AGENTS.md, .cursorrules, CLAUDE.md).
  * Uses delimiter comments to update existing sections without destroying custom file content.
  */
+/** Agent rule files a REST caller may write. Anything else (~/.bashrc, ~/.profile...) is refused. */
+export const RULE_FILE_NAMES = ["agents.md", "claude.md", "gemini.md", ".cursorrules", ".windsurfrules", "copilot-instructions.md"];
+
+export function assertRuleFilePath(targetPath: unknown): string {
+  if (typeof targetPath !== "string" || !targetPath.trim() || targetPath.includes("\0")) throw new Error("Invalid targetPath");
+  const base = targetPath.replace(/\\/g, "/").split("/").pop()!.toLowerCase();
+  if (!RULE_FILE_NAMES.includes(base)) {
+    throw new Error(`targetPath must be one of: ${RULE_FILE_NAMES.join(", ")}`);
+  }
+  return targetPath;
+}
+
 export function syncRulesToFile(
   db: Database,
   targetPath: string,

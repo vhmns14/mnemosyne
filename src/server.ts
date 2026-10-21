@@ -1,12 +1,14 @@
 import os from "node:os";
 import fs from "node:fs";
 import { CONFIG, VERSION } from "./config.ts";
-import { requiresAuth, isAuthorized, sessionCookie, clearSessionCookie } from "./auth.ts";
+import { securityGate, tokenMatches, sessionCookie, clearSessionCookie, isLoopbackHost } from "./auth.ts";
 import { getDatabase, closeDatabase } from "./db/connection.ts";
 import { MnemosyneEngine } from "./engine/index.ts";
 import { getDashboardHtml } from "./dashboard/template.ts";
 import { DeriverWorker } from "./engine/deriver.ts";
 import { handlePeerApi } from "./peer/api.ts";
+import { resolveVaultDirForApi } from "./engine/vault.ts";
+import { assertRuleFilePath } from "./engine/rules_exporter.ts";
 import type { ContextResolution, MemoryCategory, MemoryImportance, MemoryOutcome, MemoryScope } from "./types.ts";
 
 // Request body shapes for POST routes. JSON bodies are untrusted input; these
@@ -53,57 +55,100 @@ engine.onEvent((event) => {
   }
 });
 
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
+const ALLOWED_HOSTS = [
+  ...(process.env.MNEMO_ALLOWED_HOSTS || "").split(","),
+  ...(CONFIG.HOST && CONFIG.HOST !== "0.0.0.0" && CONFIG.HOST !== "::" ? [CONFIG.HOST] : []),
+].map((h) => h.trim().toLowerCase()).filter(Boolean);
+
+// Refuse to expose an unauthenticated memory store beyond this machine.
+if (!isLoopbackHost(CONFIG.HOST) && !process.env.MNEMO_AUTH_TOKEN) {
+  console.error(`Refusing to bind ${CONFIG.HOST} without MNEMO_AUTH_TOKEN: personal memory would be readable by anyone on the network.`);
+  process.exit(1);
+}
+
+const SECURITY_HEADERS: Record<string, string> = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Resource-Policy": "same-origin",
+};
+// The dashboard still uses inline handlers, so scripts need 'unsafe-inline'; everything
+// else is locked down: no framing (clickjacking on Delete), no exfiltration targets.
+const DASHBOARD_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+function withSecurityHeaders(res: Response): Response {
+  try {
+    for (const [k, v] of Object.entries(SECURITY_HEADERS)) if (!res.headers.has(k)) res.headers.set(k, v);
+  } catch {
+    // immutable headers (e.g. a proxied Response): leave as is
+  }
+  return res;
+}
+
 let server: any;
 try {
   server = Bun.serve({
     port: CONFIG.PORT,
     hostname: CONFIG.HOST,
-    async fetch(req) {
+    maxRequestBodySize: MAX_BODY_BYTES,
+    // Never Bun's development error page (stack traces, file paths) to a client.
+    development: false,
+    error(err) {
+      console.error(`[mnemo] unhandled request error: ${(err as Error)?.message ?? err}`);
+      return withSecurityHeaders(Response.json({ success: false, error: "Internal Server Error" }, { status: 500 }));
+    },
+    fetch: async (req) => withSecurityHeaders(await (async (): Promise<Response> => {
     const url = new URL(req.url);
     const method = req.method;
 
-    // Security: Restrict CORS to localhost origins only to prevent browser website exfiltration
+    // Security gate: Host allow-list (DNS rebinding), loopback-only Origin, no
+    // cross-site fetches, JSON-only state changes (CSRF), and token auth on every
+    // non-public route when MNEMO_AUTH_TOKEN is set. Query-string tokens are not
+    // accepted (they leak via logs and Referer).
+    const authToken = process.env.MNEMO_AUTH_TOKEN || "";
     const origin = req.headers.get("origin");
-    let allowedOrigin = "*";
-    if (origin) {
-      const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-      if (isLocalhost) {
-        allowedOrigin = origin;
-      } else {
-        return new Response("CORS Forbidden: External web domains cannot access local memory daemon.", { status: 403 });
-      }
+    const corsHeaders: Record<string, string> = origin
+      ? {
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+          "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Mnemosyne-Key",
+          Vary: "Origin",
+        }
+      : {};
+    const denied = securityGate(req, url, { token: authToken, allowedHosts: ALLOWED_HOSTS });
+    if (denied) {
+      for (const [k, v] of Object.entries(corsHeaders)) if (denied.status !== 403) denied.headers.set(k, v);
+      return denied;
     }
-
-    const corsHeaders: Record<string, string> = {
-      "Access-Control-Allow-Origin": allowedOrigin,
-      "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Mnemosyne-Key",
-    };
 
     if (method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // Security: Enforce 5MB payload limit to prevent memory exhaustion (RAM 16GB limit)
-    if (method === "POST") {
+    // Security: 5MB payload limit (Content-Length fast path; Bun.serve's
+    // maxRequestBodySize also caps chunked bodies that carry no Content-Length).
+    if (method === "POST" || method === "PUT" || method === "PATCH") {
       const cl = req.headers.get("content-length");
-      if (cl && parseInt(cl, 10) > 5 * 1024 * 1024) {
+      if (cl && parseInt(cl, 10) > MAX_BODY_BYTES) {
         return Response.json(
           { success: false, error: "Payload Too Large: Maximum request body is 5MB." },
           { status: 413, headers: corsHeaders }
         );
       }
-    }
-
-    // Security: Optional Bearer/Header/Cookie token authentication if configured.
-    // Query-string tokens are not accepted (they leak via logs and Referer).
-    const authToken = process.env.MNEMO_AUTH_TOKEN;
-
-    if (authToken && requiresAuth(url.pathname) && !isAuthorized(req, authToken)) {
-      return Response.json(
-        { success: false, error: "Unauthorized: Invalid or missing authentication token." },
-        { status: 401, headers: corsHeaders }
-      );
     }
 
     // Session handshake: exchange the token for an HttpOnly cookie so the dashboard and
@@ -112,7 +157,7 @@ try {
       const raw: unknown = await req.json().catch(() => null);
       const provided = raw && typeof raw === "object" && "token" in raw && typeof raw.token === "string" ? raw.token : "";
 
-      if (!authToken || provided !== authToken) {
+      if (!authToken || !tokenMatches(provided, authToken)) {
         return Response.json(
           { success: false, error: "Unauthorized: token does not match this daemon." },
           { status: 401, headers: corsHeaders }
@@ -133,6 +178,8 @@ try {
       return new Response(method === "HEAD" ? null : getDashboardHtml(CONFIG.DB_PATH), {
         headers: {
           ...corsHeaders,
+          ...SECURITY_HEADERS,
+          "Content-Security-Policy": DASHBOARD_CSP,
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-cache, no-store, must-revalidate",
         },
@@ -601,7 +648,7 @@ try {
     if (method === "POST" && url.pathname === "/v1/rules/sync") {
       try {
         const body = (await req.json()) as any;
-        const targetPath = body.targetPath || "AGENTS.md";
+        const targetPath = assertRuleFilePath(body.targetPath || "AGENTS.md");
         const format = body.format;
         const scope = body.scope || "all";
         const result = engine.syncRules(targetPath, format, scope);
@@ -1091,7 +1138,7 @@ try {
     if (method === "POST" && url.pathname === "/v1/vault/export") {
       try {
         const body = (await req.json().catch(() => ({}))) as any;
-        const result = engine.exportVault(body.target_dir);
+        const result = engine.exportVault(resolveVaultDirForApi(body.target_dir));
         return Response.json({ success: true, ...result }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders });
@@ -1101,7 +1148,7 @@ try {
     if (method === "POST" && url.pathname === "/v1/vault/sync") {
       try {
         const body = (await req.json().catch(() => ({}))) as any;
-        const result = await engine.syncVault(body.target_dir);
+        const result = await engine.syncVault(resolveVaultDirForApi(body.target_dir));
         return Response.json({ success: true, ...result }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders });
@@ -1190,7 +1237,7 @@ try {
       { status: 404, headers: corsHeaders }
     );
 
-    },
+    })()),
   });
 
   console.log(`🏛️ Mnemosyne Memory REST Daemon running on http://${server.hostname}:${server.port}`);
